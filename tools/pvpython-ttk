@@ -1,0 +1,15 @@
+#!/bin/sh
+# Project-local ParaView/TTK runtime used by the integration adapter.
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+project_root=$(dirname -- "$script_dir")
+runtime_root="$project_root/.tools/ttk-runtime"
+python_home="$project_root/.tools/python313-package/Python_Framework.pkg/Payload/Versions/3.13"
+ttk_python="$runtime_root/ttk/lib/python3.13/site-packages/topologytoolkit"
+libomp="$project_root/.tools/libomp/libomp/23.1.1/lib"
+
+export PYTHONHOME="$python_home"
+export TTK_PYTHON_DIR="$ttk_python"
+export PYTHONPATH="$ttk_python${PYTHONPATH:+:$PYTHONPATH}"
+export DYLD_LIBRARY_PATH="$libomp:$runtime_root/ttk/lib:$runtime_root/ttk-paraview/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+
+exec "$runtime_root/ttk-paraview/bin/pvpython" "$@"
