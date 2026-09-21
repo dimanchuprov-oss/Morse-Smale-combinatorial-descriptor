@@ -1,4 +1,4 @@
-"""Morse-Smale tools for closed LiDAR surfaces."""
+"""Research tools for Morse-Smale descriptors of LiDAR surfaces."""
 
 from .critical import CriticalPoint, CriticalType, analyze_morse
 from .descriptor import (

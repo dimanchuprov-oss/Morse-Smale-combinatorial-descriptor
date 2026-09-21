@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 
 from .descriptor import build_descriptor, build_ttk_descriptor
 from .intrinsic import intrinsic_scalar
@@ -33,6 +34,18 @@ def main() -> None:
     parser.add_argument("--raster-output", default=None, help="optional .npy path for the rasterized depth")
     parser.add_argument("--poisson-depth", type=int, default=8)
     args = parser.parse_args()
+    if not math.isfinite(args.sigma) or args.sigma < 0:
+        parser.error("--sigma must be a finite non-negative number")
+    if args.persistence_threshold is not None and (
+        not math.isfinite(args.persistence_threshold) or args.persistence_threshold < 0
+    ):
+        parser.error("--persistence-threshold must be a finite non-negative number")
+    if args.rows < 3 or args.cols < 3:
+        parser.error("--rows and --cols must be at least 3")
+    if args.geometry == "poisson" and args.poisson_depth < 1:
+        parser.error("--poisson-depth must be a positive integer")
+    if args.surface == "periodic" and args.geometry != "raster":
+        parser.error("--surface periodic is only supported with raster geometry")
     if args.periodic:
         args.surface = "periodic"
     if args.geometry != "raster" and args.input.lower().endswith(".npy"):
@@ -66,7 +79,8 @@ def main() -> None:
     if depth is not None:
         depth = denoise_depth(depth, args.median_size, args.sigma)
         mesh = periodic_grid_mesh(depth) if args.surface == "periodic" else grid_mesh(depth)
-    assert mesh is not None
+    if mesh is None:  # pragma: no cover - all current input branches construct one
+        raise RuntimeError("failed to construct a surface mesh")
     if args.scalar != "height":
         mesh = TriMesh(mesh.vertices, mesh.faces, intrinsic_scalar(mesh, args.scalar))
     expected_euler = mesh.euler_characteristic if mesh.closed else None
@@ -128,7 +142,8 @@ def main() -> None:
             }
             for cell in descriptor.quadrilaterals
         ]
-        assert descriptor.colored_graph is not None
+        if descriptor.colored_graph is None:  # pragma: no cover - TTK contract violation
+            raise RuntimeError("TTK descriptor did not contain a colored graph")
         report["colored_graph"] = {
             "node_count": descriptor.colored_graph.node_count,
             "triangles": descriptor.colored_graph.triangles,

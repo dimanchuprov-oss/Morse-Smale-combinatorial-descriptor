@@ -12,10 +12,11 @@ fixtures and wrapped scans. Critical points are classified from connected
 components of the lower and upper links, not from the number of higher/lower
 neighbors.
 
-The package deliberately keeps persistence simplification separate from mesh
-construction. The built-in simplifier is a small deterministic baseline for
-experimentation; production data should use TTK `TopologicalSimplification` or
-GUDHI and import its cancelled critical pairs.
+The package deliberately keeps persistence measurement separate from mesh
+construction. It reports GUDHI persistence intervals, but does not yet apply
+topological cancellation to the descriptor. Production simplification should
+run TTK `TopologicalSimplification` or an equivalent GUDHI workflow and then
+import the cancelled critical pairs explicitly.
 
 ## Quick start
 

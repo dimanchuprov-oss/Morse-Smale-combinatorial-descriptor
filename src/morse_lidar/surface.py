@@ -11,7 +11,6 @@ from .pointcloud import PointCloud
 def _unique_projected_points(
     cloud: PointCloud,
     horizontal_axes: tuple[int, int],
-    scalar_axis: int,
 ) -> np.ndarray:
     horizontal = cloud.points[:, horizontal_axes]
     unique, inverse = np.unique(horizontal, axis=0, return_inverse=True)
@@ -31,7 +30,7 @@ def reconstruct_delaunay(
     """Build an open 2.5D surface by Delaunay triangulation in XY."""
     if len(set(horizontal_axes + (scalar_axis,))) != 3:
         raise ValueError("horizontal and scalar axes must be distinct")
-    points = _unique_projected_points(cloud, horizontal_axes, scalar_axis)
+    points = _unique_projected_points(cloud, horizontal_axes)
     try:
         from scipy.spatial import Delaunay
     except ModuleNotFoundError as error:
@@ -48,7 +47,9 @@ def reconstruct_poisson(
     density_quantile: float = 0.02,
 ) -> TriMesh:
     """Reconstruct a 3D surface with Open3D Poisson reconstruction."""
-    if not 0 <= density_quantile < 1:
+    if not isinstance(depth, int) or isinstance(depth, bool) or depth < 1:
+        raise ValueError("depth must be a positive integer")
+    if not np.isfinite(density_quantile) or not 0 <= density_quantile < 1:
         raise ValueError("density_quantile must be in [0, 1)")
     try:
         import open3d as o3d

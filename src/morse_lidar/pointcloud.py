@@ -69,6 +69,8 @@ def _load_ascii_pcd(path: Path) -> PointCloud:
             header.append(stripped)
             if stripped.lower().startswith("data "):
                 break
+        if not header or not header[-1].lower().startswith("data "):
+            raise ValueError("PCD header has no DATA declaration")
         data_mode = header[-1].lower().split()[-1]
         if data_mode != "ascii":
             raise RuntimeError("binary PCD requires the optional lidar extra")
@@ -134,17 +136,23 @@ def _fill_nearest(field: np.ndarray) -> np.ndarray:
         return field
     try:
         from scipy.ndimage import distance_transform_edt
-    except ModuleNotFoundError:
+    except (ModuleNotFoundError, ImportError):
         result = field.copy()
-        for _ in range(max(result.shape)):
+        # Propagation can need rows + columns - 2 steps when the only known
+        # sample is in a corner.  A progress guard also handles pathological
+        # inputs without looping forever.
+        for _ in range(result.size):
             missing = ~np.isfinite(result)
             if not missing.any():
                 return result
+            before = int(missing.sum())
             padded = np.pad(result, 1, mode="edge")
             candidates = [padded[:-2, 1:-1], padded[2:, 1:-1], padded[1:-1, :-2], padded[1:-1, 2:]]
             for candidate in candidates:
                 take = missing & np.isfinite(candidate)
                 result[take] = candidate[take]
+            if int((~np.isfinite(result)).sum()) >= before:
+                break
         raise ValueError("unable to fill depth raster; install the signal extra")
     missing = ~np.isfinite(field)
     nearest = distance_transform_edt(missing, return_distances=False, return_indices=True)
