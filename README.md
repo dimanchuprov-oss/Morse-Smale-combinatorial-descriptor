@@ -12,19 +12,27 @@ fixtures and wrapped scans. Critical points are classified from connected
 components of the lower and upper links, not from the number of higher/lower
 neighbors.
 
-The package deliberately keeps persistence measurement separate from mesh
-construction. It reports GUDHI persistence intervals, but does not yet apply
-topological cancellation to the descriptor. Production simplification should
-run TTK `TopologicalSimplification` or an equivalent GUDHI workflow and then
-import the cancelled critical pairs explicitly.
+Persistence is computed with GUDHI on the same triangulation and with the
+same tie-breaking order (simulation of simplicity) as the critical point
+classifier, so every critical point carries its own persistence value.
+`--persistence-threshold` then reports how many minima, saddles and maxima
+survive (`persistent_counts`). This drops low-persistence pairs but does not
+reroute separatrices, i.e. it is not yet a full Morse-Smale cancellation;
+production simplification should run TTK `TopologicalSimplification` or an
+equivalent workflow. On closed surfaces the persistent counts keep the Morse
+Euler relation; saddles are always weighted by multiplicity.
 
 ## Quick start
 
 ```bash
-python -m pip install -e '.[dev,topology]'
+python -m pip install -e '.[dev,topology,signal]'
 pytest
-python -m morse_lidar.cli --input depth.npy --output descriptor.json --surface open
+python -m morse_lidar.cli --input depth.npy --output descriptor.json --surface open --pixel-size 0.001
+python examples/synthetic_demo.py   # end-to-end demo on synthetic iPhone-like scans
 ```
+
+`--pixel-size` is the grid spacing in depth units; it only matters for the
+curvature fields, which are metric.
 
 `depth.npy` must contain a 2D finite NumPy array. The CLI reports topology
 violations instead of silently producing a descriptor from an invalid mesh.
@@ -33,49 +41,92 @@ Real point clouds are also accepted. ASCII PLY/PCD and XYZ/CSV work with the
 base installation; binary PLY/PCD and LAS/LAZ require the optional LiDAR extra:
 
 ```bash
-python -m pip install -e '.[lidar]'
 python -m morse_lidar.cli --input scan.ply --output descriptor.json \
-	--periodic --rows 256 --cols 256 --voxel-size 0.002 \
-	--raster-output depth.npy
+    --rows 256 --cols 256 --voxel-size 0.002 --persistence-threshold 0.01 \
+    --raster-output depth.npy
 ```
 
-The projection is an axis-aligned median depth raster. `raster_coverage`,
-`point_count`, `surface`, and `boundary_vertices` are written to the JSON
-report. Use `--surface open` for facial scans; `--periodic` is retained as a
-backward-compatible alias for synthetic torus data. Open-surface descriptors
-do not report the closed-manifold Euler invariant.
+Binary little/big-endian PLY files whose first element is `vertex` (what
+scanning apps usually write) are read with NumPy alone; other binary layouts
+fall back to Open3D.
+
+The projection is an axis-aligned median depth raster with metric spacing
+(`raster_spacing`). `raster_coverage`, `point_count`, `surface`, and
+`boundary_vertices` are written to the JSON report. Real scans are open
+surfaces; `--surface periodic` (alias `--periodic`) is meant for synthetic
+torus data and prints a warning on point clouds, because gluing the raster
+edges creates artificial critical points along the seam. Open-surface
+descriptors do not report the closed-manifold Euler invariant; separatrices
+that run into the masked rim are kept and flagged `ends_on_boundary`.
+
+### Preparing real scans (e.g. iPhone LiDAR)
+
+```bash
+morse-lidar --input scan.ply --output scan.json \
+    --up-axis y --remove-plane 0.01 --voxel-size 0.01 \
+    --geometry delaunay --persistence-threshold 0.01
+```
+
+* `--up-axis y` rotates Y-up exports (ARKit/iPhone) so that Z is height.
+* `--remove-plane D` drops the dominant plane (floor/table) with RANSAC.
+* `--align pca` centres the cloud and rotates its principal axes onto XYZ,
+  so the height field does not depend on how the scanner was held.
+
+### Comparing descriptors
+
+Every report contains the persistence diagram of the scalar field
+(`persistence_diagram`, GUDHI required); with the heuristic backend every
+critical point also carries its own `persistence`. Two reports are compared with the bottleneck distance, which
+is stable: it never exceeds the sup-norm difference of the two scalar fields.
+
+```bash
+morse-lidar-compare first.json second.json
+```
 
 To build a triangular surface directly from XYZ/PLY/PCD points, use Delaunay
 geometry instead of rasterization:
 
 ```bash
 python -m morse_lidar.cli --input scan.ply --output descriptor.json \
-	--geometry delaunay --voxel-size 0.002
+    --geometry delaunay --voxel-size 0.002
 ```
 
 For a pose-robust scalar field, replace camera height with intrinsic geometry:
 
 ```bash
 python -m morse_lidar.cli --input scan.ply --output descriptor.json \
-	--geometry delaunay --scalar gaussian-curvature
+    --geometry delaunay --scalar gaussian-curvature
 ```
 
 Available scalar fields are `height`, `gaussian-curvature`,
-`mean-curvature`, and `shape-index`. Curvature fields are computed on the
-triangular mesh before Morse classification, including boundary-aware angle
-deficits for open surfaces.
+`mean-curvature`, and `shape-index`. Curvature fields are pointwise (per unit
+area) and therefore independent of mesh density: Gaussian curvature is the
+angle deficit divided by the barycentric area, mean curvature is the signed
+cotangent-Laplacian estimate (positive on a dome whose normals point towards
++Z), and the shape index is +1 on a dome, 0 on a saddle and -1 on a bowl.
+Values on the rim of an open surface are replaced by the mean of their
+interior neighbours. Curvature is noise-sensitive: on raw scans smooth first
+(`--sigma`, larger `--voxel-size`) or most critical points will be noise.
 
 Persistence filtering also works on reconstructed meshes:
 
 ```bash
 python -m morse_lidar.cli --input scan.ply --output descriptor.json \
-	--geometry delaunay --scalar gaussian-curvature \
-	--persistence-threshold 0.001
+    --geometry delaunay --scalar gaussian-curvature \
+    --persistence-threshold 0.001
 ```
 
-Raster geometry uses GUDHI's cubical complex; Delaunay and Poisson geometry use
-a GUDHI simplicial complex with lower-star vertex filtration. Maxima are
-computed by running the corresponding scalar field with inverted values.
+All geometries use a GUDHI lower-star filtration on the triangulated mesh
+with the classifier's tie-breaking, so every pair is created by critical
+vertices (dimension 0: minimum-saddle, dimension 1: saddle-maximum,
+dimension 2: the global maximum of a closed surface); a k-fold saddle belongs
+to k pairs. On open surfaces pairs may also involve rim vertices, which are
+masked from the critical point list.
+
+`persistent_minima`/`persistent_maxima` changed meaning in 0.2.0: they now
+count classified *interior* extrema that belong to a pair of at least the
+threshold (previously: dimension-0 cubical intervals, including extrema on the
+rim of the scan). `persistent_saddles` and `persistent_counts` are new.
 
 This is a 2.5D surface: triangles are built in the selected XY projection and
 retain the measured Z coordinates. For a full 3D reconstruction, install the
@@ -84,21 +135,25 @@ LiDAR extra and use Open3D Poisson reconstruction:
 ```bash
 python -m pip install -e '.[lidar]'
 python -m morse_lidar.cli --input scan.ply --output descriptor.json \
-	--geometry poisson --poisson-depth 8
+    --geometry poisson --poisson-depth 8
 ```
+
+Poisson trims its lowest-density vertices by default
+(`--poisson-density-quantile 0.02`), which opens the mesh; pass `0` to keep
+the watertight surface required by the TTK backend.
 
 On macOS, Open3D may additionally require the native `libusb` library. Poisson
 reconstruction requires at least 30 points and may produce a closed mesh. Its
 Euler characteristic is computed from the reconstructed mesh rather than
 assumed to be the torus value.
 
-For cubical persistence, install the optional GUDHI backend and pass a noise
-threshold:
+For persistence, install the optional GUDHI backend and pass a noise
+threshold in scalar units:
 
 ```bash
 python -m pip install -e '.[topology]'
 python -m morse_lidar.cli --input depth.npy --output descriptor.json \
-	--periodic --persistence-threshold 0.02
+    --surface periodic --persistence-threshold 0.02
 ```
 
 TTK is distributed most reliably with ParaView rather than PyPI. The

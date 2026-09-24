@@ -15,10 +15,11 @@ def test_persistence_filter_is_deterministic():
 
 def test_gudhi_backend_has_actionable_optional_dependency_error():
     try:
-        cubical_persistence(np.zeros((3, 3)))
-    except RuntimeError as error:
-        assert "topology" in str(error)
-    except Exception:
+        import gudhi  # noqa: F401
+    except ModuleNotFoundError:
+        with pytest.raises(RuntimeError, match="topology"):
+            cubical_persistence(np.zeros((3, 3)))
+    else:
         pytest.skip("GUDHI is installed in this environment")
 
 

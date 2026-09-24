@@ -12,14 +12,15 @@ def _unique_projected_points(
     cloud: PointCloud,
     horizontal_axes: tuple[int, int],
 ) -> np.ndarray:
+    """Collapse points sharing one horizontal position to their median."""
     horizontal = cloud.points[:, horizontal_axes]
     unique, inverse = np.unique(horizontal, axis=0, return_inverse=True)
     if len(unique) == len(cloud.points):
         return cloud.points.copy()
-    representatives = np.zeros((len(unique), 3), dtype=float)
-    for group in range(len(unique)):
-        representatives[group] = np.median(cloud.points[inverse == group], axis=0)
-    return representatives
+    inverse = np.asarray(inverse).ravel()
+    order = np.argsort(inverse, kind="stable")
+    groups = np.split(order, np.cumsum(np.bincount(inverse))[:-1])
+    return np.asarray([np.median(cloud.points[group], axis=0) for group in groups])
 
 
 def reconstruct_delaunay(
@@ -38,7 +39,14 @@ def reconstruct_delaunay(
     if len(points) < 3:
         raise ValueError("at least three projected points are required")
     triangulation = Delaunay(points[:, horizontal_axes])
-    return TriMesh(points, np.asarray(triangulation.simplices, dtype=np.int64), points[:, scalar_axis])
+    faces = np.asarray(triangulation.simplices, dtype=np.int64)
+    # SciPy does not guarantee a consistent winding. Orient every triangle so
+    # its normal points towards +scalar_axis; signed curvature relies on it.
+    corners = points[faces]
+    normals = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    flip = normals[:, scalar_axis] < 0
+    faces[flip] = faces[flip][:, [0, 2, 1]]
+    return TriMesh(points, faces, points[:, scalar_axis])
 
 
 def reconstruct_poisson(
@@ -46,7 +54,12 @@ def reconstruct_poisson(
     depth: int = 8,
     density_quantile: float = 0.02,
 ) -> TriMesh:
-    """Reconstruct a 3D surface with Open3D Poisson reconstruction."""
+    """Reconstruct a 3D surface with Open3D Poisson reconstruction.
+
+    Trimming low-density vertices (``density_quantile > 0``) removes the
+    hallucinated surface far from the data but opens the mesh; pass ``0`` to
+    keep the watertight result required by the TTK backend.
+    """
     if not isinstance(depth, int) or isinstance(depth, bool) or depth < 1:
         raise ValueError("depth must be a positive integer")
     if not np.isfinite(density_quantile) or not 0 <= density_quantile < 1:

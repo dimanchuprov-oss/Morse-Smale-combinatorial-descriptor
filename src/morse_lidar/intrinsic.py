@@ -1,4 +1,11 @@
-"""Intrinsic scalar fields computed directly on triangular surfaces."""
+"""Pointwise curvature scalar fields computed directly on triangular surfaces.
+
+All fields are per unit area (Gaussian curvature in 1/length^2, mean curvature
+in 1/length), so values do not depend on mesh density. Mean curvature is signed
+with respect to the face orientation: a dome whose normals point away from its
+centre of curvature has ``H > 0``; for height fields built by this package the
+normals point towards +Z.
+"""
 
 from __future__ import annotations
 
@@ -7,60 +14,87 @@ import numpy as np
 from .mesh import TriMesh
 
 
-def _corner_angle(first: np.ndarray, center: np.ndarray, last: np.ndarray) -> float:
-    left = first - center
-    right = last - center
-    denominator = np.linalg.norm(left) * np.linalg.norm(right)
-    if denominator == 0:
-        return 0.0
-    cosine = np.clip(np.dot(left, right) / denominator, -1.0, 1.0)
-    return float(np.arccos(cosine))
+def _corner_geometry(mesh: TriMesh) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return corner points, corner angles and corner cotangents per face."""
+    corners = mesh.vertices[mesh.faces]
+    angles = np.empty(mesh.faces.shape, dtype=float)
+    cotangents = np.empty(mesh.faces.shape, dtype=float)
+    for corner in range(3):
+        first = corners[:, (corner + 1) % 3] - corners[:, corner]
+        second = corners[:, (corner + 2) % 3] - corners[:, corner]
+        sine = np.linalg.norm(np.cross(first, second), axis=1)
+        cosine = np.einsum("ij,ij->i", first, second)
+        angles[:, corner] = np.arctan2(sine, cosine)
+        cotangents[:, corner] = cosine / np.maximum(sine, np.finfo(float).eps)
+    return corners, angles, cotangents
+
+
+def _safe_area(mesh: TriMesh) -> np.ndarray:
+    return np.maximum(mesh.vertex_areas, np.finfo(float).eps)
+
+
+def _extend_to_boundary(mesh: TriMesh, values: np.ndarray) -> np.ndarray:
+    """Replace boundary estimates by the mean of their interior neighbours.
+
+    Discrete curvature operators are not defined on the rim of an open scan and
+    otherwise produce large artificial extrema there.
+    """
+    boundary = mesh.boundary_vertices
+    if not boundary:
+        return values
+    neighbors, _ = mesh.neighbors_and_link()
+    result = values.copy()
+    for vertex in boundary:
+        interior = [item for item in neighbors[vertex] if item not in boundary]
+        if interior:
+            result[vertex] = float(np.mean(values[interior]))
+    return result
+
+
+def _raw_gaussian_curvature(mesh: TriMesh, angles: np.ndarray) -> np.ndarray:
+    angle_sum = np.zeros(len(mesh.vertices), dtype=float)
+    np.add.at(angle_sum, mesh.faces.ravel(), angles.ravel())
+    target = np.full(len(mesh.vertices), 2.0 * np.pi)
+    target[list(mesh.boundary_vertices)] = np.pi
+    return (target - angle_sum) / _safe_area(mesh)
+
+
+def _raw_mean_curvature(mesh: TriMesh, corners: np.ndarray, cotangents: np.ndarray) -> np.ndarray:
+    laplacian = np.zeros_like(mesh.vertices)
+    for corner in range(3):
+        following, previous = (corner + 1) % 3, (corner + 2) % 3
+        # Edge (corner, following) is opposite ``previous`` and vice versa.
+        contribution = cotangents[:, previous, None] * (corners[:, following] - corners[:, corner]) + cotangents[
+            :, following, None
+        ] * (corners[:, previous] - corners[:, corner])
+        np.add.at(laplacian, mesh.faces[:, corner], contribution)
+    # Laplace-Beltrami of the embedding: laplacian / (2A) = -2 H n.
+    return -np.einsum("ij,ij->i", laplacian, mesh.vertex_normals) / (4.0 * _safe_area(mesh))
 
 
 def gaussian_curvature(mesh: TriMesh) -> np.ndarray:
-    """Estimate Gaussian curvature by angle deficit at each vertex."""
-    angle_sum = np.zeros(len(mesh.vertices), dtype=float)
-    for face in mesh.faces:
-        first, center, last = (mesh.vertices[int(index)] for index in face)
-        angle_sum[int(face[0])] += _corner_angle(center, first, last)
-        angle_sum[int(face[1])] += _corner_angle(last, center, first)
-        angle_sum[int(face[2])] += _corner_angle(first, last, center)
-    target = np.full(len(mesh.vertices), 2.0 * np.pi)
-    target[list(mesh.boundary_vertices)] = np.pi
-    return target - angle_sum
+    """Pointwise Gaussian curvature: angle deficit divided by barycentric area."""
+    _, angles, _ = _corner_geometry(mesh)
+    return _extend_to_boundary(mesh, _raw_gaussian_curvature(mesh, angles))
 
 
 def mean_curvature(mesh: TriMesh) -> np.ndarray:
-    """Estimate mean-curvature magnitude with a cotangent Laplacian."""
-    laplacian = np.zeros_like(mesh.vertices)
-    mixed_area = np.zeros(len(mesh.vertices), dtype=float)
-    for face in mesh.faces:
-        indices = [int(index) for index in face]
-        points = mesh.vertices[indices]
-        edge_a, edge_b, edge_c = points[1] - points[0], points[2] - points[1], points[0] - points[2]
-        area = 0.5 * np.linalg.norm(np.cross(edge_a, -edge_c))
-        if area == 0:
-            continue
-        cotangents = (
-            np.dot(points[1] - points[0], points[2] - points[0]) / np.linalg.norm(np.cross(points[1] - points[0], points[2] - points[0])),
-            np.dot(points[0] - points[1], points[2] - points[1]) / np.linalg.norm(np.cross(points[0] - points[1], points[2] - points[1])),
-            np.dot(points[0] - points[2], points[1] - points[2]) / np.linalg.norm(np.cross(points[0] - points[2], points[1] - points[2])),
-        )
-        laplacian[indices[0]] += cotangents[1] * (points[2] - points[0]) + cotangents[2] * (points[1] - points[0])
-        laplacian[indices[1]] += cotangents[2] * (points[0] - points[1]) + cotangents[0] * (points[2] - points[1])
-        laplacian[indices[2]] += cotangents[0] * (points[1] - points[2]) + cotangents[1] * (points[0] - points[2])
-        mixed_area[indices] += area / 3.0
-    safe_area = np.maximum(mixed_area, np.finfo(float).eps)
-    return 0.5 * np.linalg.norm(laplacian / safe_area[:, None], axis=1)
+    """Signed pointwise mean curvature from the cotangent Laplacian."""
+    corners, _, cotangents = _corner_geometry(mesh)
+    return _extend_to_boundary(mesh, _raw_mean_curvature(mesh, corners, cotangents))
 
 
 def shape_index(mesh: TriMesh) -> np.ndarray:
-    """Estimate Koenderink shape index from mean and Gaussian curvature."""
-    mean = mean_curvature(mesh)
-    gaussian = gaussian_curvature(mesh)
+    """Koenderink shape index in [-1, 1]: +1 dome (cap), 0 saddle, -1 bowl (cup).
+
+    Planar vertices (H = K = 0) get 0.
+    """
+    corners, angles, cotangents = _corner_geometry(mesh)
+    mean = _raw_mean_curvature(mesh, corners, cotangents)
+    gaussian = _raw_gaussian_curvature(mesh, angles)
+    # k1,2 = H +- sqrt(H^2 - K); S = (2/pi) arctan((k1 + k2) / (k1 - k2)).
     discriminant = np.sqrt(np.maximum(mean * mean - gaussian, 0.0))
-    denominator = np.maximum(2.0 * discriminant, np.finfo(float).eps)
-    return -(2.0 / np.pi) * np.arctan2(2.0 * mean, denominator)
+    return _extend_to_boundary(mesh, (2.0 / np.pi) * np.arctan2(mean, discriminant))
 
 
 def intrinsic_scalar(mesh: TriMesh, kind: str) -> np.ndarray:
