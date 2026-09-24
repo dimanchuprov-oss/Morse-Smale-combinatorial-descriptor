@@ -54,10 +54,15 @@ class Descriptor:
     def counts(self) -> dict[str, int]:
         return {kind.value: sum(point.kind == kind for point in self.critical_points) for kind in CriticalType}
 
+    @property
+    def saddle_index_sum(self) -> int:
+        """Saddles weighted by multiplicity (a monkey saddle counts twice)."""
+        return sum(max(point.saddle_multiplicity, 1) for point in self.critical_points if point.kind == CriticalType.SADDLE)
+
 
 def validate_euler(descriptor: Descriptor) -> None:
     counts = descriptor.counts
-    actual = counts["max"] - counts["saddle"] + counts["min"]
+    actual = counts["max"] - descriptor.saddle_index_sum + counts["min"]
     if actual != descriptor.euler_characteristic:
         raise ValueError(f"Morse Euler invariant failed: {actual} != {descriptor.euler_characteristic}")
 

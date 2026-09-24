@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "morse-lidar"
-version = "0.1.0"
+version = "0.2.0"
 description = "Morse-Smale topology tools for LiDAR depth surfaces"
 requires-python = ">=3.10"
 dependencies = [
@@ -19,6 +19,7 @@ lidar = ["laspy>=2.5", "open3d>=0.18"]
 
 [project.scripts]
 morse-lidar = "morse_lidar.cli:main"
+morse-lidar-compare = "morse_lidar.compare:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

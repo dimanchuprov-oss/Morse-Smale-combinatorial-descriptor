@@ -26,6 +26,8 @@ class DepthRaster:
     depth: np.ndarray
     coverage: float
     bounds: tuple[float, float, float, float]
+    # (x, y) distance between neighbouring raster samples, in point units.
+    spacing: tuple[float, float] = (1.0, 1.0)
 
 
 def _load_text_xyz(path: Path, delimiter: str | None = None) -> PointCloud:
@@ -35,30 +37,73 @@ def _load_text_xyz(path: Path, delimiter: str | None = None) -> PointCloud:
     return PointCloud(data[:, :3])
 
 
-def _load_ascii_ply(path: Path) -> PointCloud:
+_PLY_TYPES = {
+    "char": "i1", "int8": "i1", "uchar": "u1", "uint8": "u1",
+    "short": "i2", "int16": "i2", "ushort": "u2", "uint16": "u2",
+    "int": "i4", "int32": "i4", "uint": "u4", "uint32": "u4",
+    "float": "f4", "float32": "f4", "double": "f8", "float64": "f8",
+}
+
+
+def _load_ply(path: Path) -> PointCloud:
+    """Read the vertex element of an ASCII or binary PLY file with NumPy only.
+
+    Supports the common case written by scanning apps (including iPhone LiDAR
+    exporters): the vertex element comes first and has scalar properties.
+    Other layouts raise ``RuntimeError`` so the caller can fall back to Open3D.
+    """
     with path.open("rb") as handle:
         header: list[str] = []
         while True:
             line = handle.readline()
             if not line:
                 raise ValueError("PLY header has no end_header marker")
-            decoded = line.decode("ascii").strip()
+            decoded = line.decode("ascii", errors="replace").strip()
             header.append(decoded)
             if decoded == "end_header":
                 break
-        if not header or header[0] != "ply" or not any(line == "format ascii 1.0" for line in header):
-            raise RuntimeError("binary PLY requires the optional lidar extra")
-        vertex_line = next((line for line in header if line.startswith("element vertex ")), None)
-        if vertex_line is None:
-            raise ValueError("PLY has no vertex element")
-        count = int(vertex_line.split()[-1])
-        points = []
-        for _ in range(count):
-            values = handle.readline().decode("ascii").split()
-            if len(values) < 3:
-                raise ValueError("PLY vertex has fewer than three coordinates")
-            points.append([float(values[0]), float(values[1]), float(values[2])])
-    return PointCloud(np.asarray(points, dtype=float))
+        body = handle.read()
+    if not header or header[0] != "ply":
+        raise ValueError("not a PLY file")
+    format_line = next((line.split() for line in header if line.startswith("format ")), None)
+    if format_line is None:
+        raise ValueError("PLY header has no format line")
+    elements: list[tuple[str, int, list[tuple[str, str]]]] = []
+    for line in header:
+        parts = line.split()
+        if parts[:1] == ["element"]:
+            elements.append((parts[1], int(parts[2]), []))
+        elif parts[:1] == ["property"] and elements:
+            if parts[1] == "list":
+                elements[-1][2].append(("list", parts[-1]))
+            else:
+                elements[-1][2].append((parts[1], parts[2]))
+    if not elements or elements[0][0] != "vertex":
+        raise RuntimeError("PLY vertex element is not first; the lidar extra is required")
+    _, count, properties = elements[0]
+    names = [name for _, name in properties]
+    if not {"x", "y", "z"}.issubset(names):
+        raise ValueError("PLY vertex element must contain x, y, z")
+    indices = [names.index(axis) for axis in ("x", "y", "z")]
+    if format_line[1] == "ascii":
+        rows = [row for row in body.decode("ascii").splitlines() if row.strip()][:count]
+        if len(rows) < count:
+            raise ValueError("PLY file has fewer vertices than declared")
+        fields = [row.split()[: len(properties)] for row in rows]
+        if any(len(row) <= max(indices) for row in fields):
+            raise ValueError("PLY vertex has fewer than three coordinates")
+        values = np.asarray([[float(row[index]) for index in indices] for row in fields], dtype=float)
+        return PointCloud(values)
+    if any(kind == "list" or kind not in _PLY_TYPES for kind, _ in properties):
+        raise RuntimeError("PLY vertex element has unsupported properties; the lidar extra is required")
+    endian = {"binary_little_endian": "<", "binary_big_endian": ">"}.get(format_line[1])
+    if endian is None:
+        raise ValueError(f"unknown PLY format: {format_line[1]}")
+    dtype = np.dtype([(name, endian + _PLY_TYPES[kind]) for kind, name in properties])
+    if len(body) < count * dtype.itemsize:
+        raise ValueError("PLY file has fewer vertices than declared")
+    vertices = np.frombuffer(body, dtype=dtype, count=count)
+    return PointCloud(np.column_stack([vertices[axis].astype(float) for axis in ("x", "y", "z")]))
 
 
 def _load_ascii_pcd(path: Path) -> PointCloud:
@@ -100,7 +145,7 @@ def load_point_cloud(path: str | Path) -> PointCloud:
         return PointCloud(np.load(source))
     if suffix == ".ply":
         try:
-            return _load_ascii_ply(source)
+            return _load_ply(source)
         except RuntimeError:
             return _load_open3d(source)
     if suffix == ".pcd":
@@ -166,7 +211,11 @@ def rasterize_depth(
     horizontal_axes: tuple[int, int] = (0, 1),
     depth_axis: int = 2,
 ) -> DepthRaster:
-    """Project points to a median depth raster and fill uncovered cells."""
+    """Project points to a median depth raster and fill uncovered cells.
+
+    Sample ``(row, col)`` sits at ``lower + (col, row) * spacing``, so the
+    raster can be meshed with its true metric spacing.
+    """
     if rows < 3 or cols < 3:
         raise ValueError("raster dimensions must be at least 3x3")
     if len(set(horizontal_axes + (depth_axis,))) != 3:
@@ -176,17 +225,90 @@ def rasterize_depth(
     lower = horizontal.min(axis=0)
     upper = horizontal.max(axis=0)
     span = np.maximum(upper - lower, np.finfo(float).eps)
-    coordinates = np.floor((horizontal - lower) / span * np.array([cols - 1, rows - 1])).astype(int)
+    spacing = span / np.array([cols - 1, rows - 1])
+    coordinates = np.rint((horizontal - lower) / spacing).astype(np.int64)
     coordinates[:, 0] = np.clip(coordinates[:, 0], 0, cols - 1)
     coordinates[:, 1] = np.clip(coordinates[:, 1], 0, rows - 1)
-    buckets: list[list[float]] = [[] for _ in range(rows * cols)]
-    for (x, y), depth in zip(coordinates, points[:, depth_axis]):
-        buckets[y * cols + x].append(float(depth))
-    raster = np.full((rows, cols), np.nan, dtype=float)
-    for index, values in enumerate(buckets):
-        if values:
-            raster[index // cols, index % cols] = float(np.median(values))
+    cells = coordinates[:, 1] * cols + coordinates[:, 0]
+    depth = points[:, depth_axis]
+    ordered = np.lexsort((depth, cells))
+    sorted_cells, sorted_depth = cells[ordered], depth[ordered]
+    occupied, starts, counts = np.unique(sorted_cells, return_index=True, return_counts=True)
+    medians = 0.5 * (sorted_depth[starts + (counts - 1) // 2] + sorted_depth[starts + counts // 2])
+    raster = np.full(rows * cols, np.nan, dtype=float)
+    raster[occupied] = medians
+    raster = raster.reshape(rows, cols)
     coverage = float(np.isfinite(raster).mean())
     if coverage == 0:
         raise ValueError("point cloud produced an empty depth raster")
-    return DepthRaster(_fill_nearest(raster), coverage, (float(lower[0]), float(lower[1]), float(upper[0]), float(upper[1])))
+    return DepthRaster(
+        _fill_nearest(raster),
+        coverage,
+        (float(lower[0]), float(lower[1]), float(upper[0]), float(upper[1])),
+        (float(spacing[0]), float(spacing[1])),
+    )
+
+
+def set_up_axis(cloud: PointCloud, up: str) -> PointCloud:
+    """Rotate the cloud so that the given axis becomes +Z (right-handed).
+
+    ARKit/iPhone exports are Y-up; this package treats Z as height.
+    """
+    permutations = {"z": [0, 1, 2], "y": [2, 0, 1], "x": [1, 2, 0]}
+    if up not in permutations:
+        raise ValueError("up axis must be one of x, y, z")
+    return PointCloud(cloud.points[:, permutations[up]])
+
+
+def align_pca(cloud: PointCloud) -> PointCloud:
+    """Centre the cloud and rotate its principal axes onto X, Y, Z.
+
+    The direction of least variance becomes Z, which makes the height field
+    independent of the scanner pose for roughly flat or elongated objects.
+    The new Z keeps the orientation of the input +Z (so a dome stays a dome;
+    set the up axis first with :func:`set_up_axis`), X is signed by the third
+    moment and Y completes a right-handed frame, so the result is deterministic.
+    """
+    centred = cloud.points - cloud.points.mean(axis=0)
+    if len(centred) < 3:
+        raise ValueError("PCA alignment needs at least three points")
+    _, eigenvectors = np.linalg.eigh(np.cov(centred.T))
+    basis = eigenvectors[:, ::-1].copy()  # largest variance first, smallest -> Z
+    if basis[2, 2] < 0:  # new Z must not point against the input "up"
+        basis[:, 2] *= -1.0
+    if ((centred @ basis[:, 0]) ** 3).mean() < 0:
+        basis[:, 0] *= -1.0
+    basis[:, 1] = np.cross(basis[:, 2], basis[:, 0])
+    return PointCloud(centred @ basis)
+
+
+def remove_dominant_plane(
+    cloud: PointCloud,
+    distance: float,
+    iterations: int = 500,
+    seed: int = 0,
+) -> tuple[PointCloud, int]:
+    """Drop the largest planar patch (floor, table, wall) with RANSAC.
+
+    Returns the remaining points and how many were removed.
+    """
+    if not np.isfinite(distance) or distance <= 0:
+        raise ValueError("plane distance must be positive")
+    points = cloud.points
+    if len(points) < 4:
+        return cloud, 0
+    rng = np.random.default_rng(seed)
+    best_mask = np.zeros(len(points), dtype=bool)
+    for _ in range(iterations):
+        sample = points[rng.choice(len(points), size=3, replace=False)]
+        normal = np.cross(sample[1] - sample[0], sample[2] - sample[0])
+        length = np.linalg.norm(normal)
+        if length == 0:
+            continue
+        mask = np.abs((points - sample[0]) @ (normal / length)) <= distance
+        if mask.sum() > best_mask.sum():
+            best_mask = mask
+    remaining = points[~best_mask]
+    if len(remaining) == 0:
+        raise ValueError("plane removal left no points")
+    return PointCloud(remaining), int(best_mask.sum())

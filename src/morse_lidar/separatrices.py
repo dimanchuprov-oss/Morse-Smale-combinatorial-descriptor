@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .critical import CriticalPoint, CriticalType
+from .critical import CriticalPoint, CriticalType, lower_upper_links
 from .mesh import TriMesh
 
 
@@ -19,43 +19,58 @@ class Separatrix:
     source_cell_id: int | None = None
     destination_cell_id: int | None = None
     backend: str = "steepest-monotone-baseline"
+    # True when the arc leaves the interior and stops at a masked boundary
+    # vertex instead of an interior extremum (open surfaces only).
+    ends_on_boundary: bool = False
 
 
-def _trace(mesh: TriMesh, start: int, direction: int, neighbors: list[set[int]], limit: int) -> tuple[int, ...]:
+def _trace(mesh: TriMesh, start: int, direction: int, neighbors: tuple[frozenset[int], ...]) -> tuple[int, ...]:
+    """Follow the steepest neighbour in the SoS order until an extremum.
+
+    The walk is strictly monotone in ``mesh.order``, so it cannot revisit a
+    vertex and always terminates at a (possibly boundary) local extremum.
+    """
+    order = mesh.order
     path = [start]
     current = start
-    for _ in range(limit):
-        candidates = [item for item in neighbors[current] if direction * (mesh.values[item] - mesh.values[current]) > 0]
+    while True:
+        candidates = [item for item in neighbors[current] if direction * (order[item] - order[current]) > 0]
         if not candidates:
-            break
-        next_vertex = min(candidates, key=lambda item: (direction * mesh.values[item], item))
-        if next_vertex in path:
-            break
-        path.append(next_vertex)
-        current = next_vertex
-    return tuple(path)
+            return tuple(path)
+        current = min(candidates, key=lambda item: direction * order[item])
+        path.append(current)
 
 
 def trace_separatrices(mesh: TriMesh, points: list[CriticalPoint]) -> list[Separatrix]:
-    """Trace steepest monotone arcs as a baseline until a critical endpoint.
+    """Trace one steepest monotone arc per lower/upper link component of a saddle.
 
     This is intentionally not presented as a substitute for TTK's MSC. It is
     useful for fixtures and for checking the data contract before integrating
-    a production discrete-gradient implementation.
+    a production discrete-gradient implementation. A simple saddle yields
+    exactly two descending (``u``) and two ascending (``s``) arcs.
     """
     neighbors, _ = mesh.neighbors_and_link()
+    order = mesh.order
+    boundary = mesh.boundary_vertices
     by_vertex = {point.vertex: point for point in points}
     arcs: list[Separatrix] = []
     for point in points:
         if point.kind != CriticalType.SADDLE:
             continue
-        for direction, kind in ((-1, "u"), (1, "s")):
-            candidates = [item for item in neighbors[point.vertex] if direction * (mesh.values[item] - mesh.values[point.vertex]) > 0]
-            for candidate in sorted(candidates):
-                path = _trace(mesh, candidate, direction, neighbors, len(mesh.vertices))
+        lower, upper = lower_upper_links(mesh, point.vertex)
+        for direction, kind, components, expected in (
+            (-1, "u", lower, CriticalType.MINIMUM),
+            (1, "s", upper, CriticalType.MAXIMUM),
+        ):
+            for component in sorted(components, key=min):
+                start = min(component, key=lambda item: direction * order[item])
+                path = _trace(mesh, start, direction, neighbors)
                 endpoint = path[-1]
                 endpoint_point = by_vertex.get(endpoint)
-                if endpoint_point is None or endpoint_point.kind not in (CriticalType.MINIMUM, CriticalType.MAXIMUM):
-                    continue
-                arcs.append(Separatrix(point.vertex, endpoint, kind, (point.vertex, *path)))
+                on_boundary = endpoint in boundary and endpoint_point is None
+                if not on_boundary and (endpoint_point is None or endpoint_point.kind != expected):
+                    raise RuntimeError(f"separatrix from saddle {point.vertex} ended at non-extremum {endpoint}")
+                arcs.append(
+                    Separatrix(point.vertex, endpoint, kind, (point.vertex, *path), ends_on_boundary=on_boundary)
+                )
     return arcs
