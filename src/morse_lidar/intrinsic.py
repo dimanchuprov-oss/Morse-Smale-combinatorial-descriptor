@@ -34,7 +34,7 @@ def _safe_area(mesh: TriMesh) -> np.ndarray:
 
 
 def _extend_to_boundary(mesh: TriMesh, values: np.ndarray) -> np.ndarray:
-    """Replace boundary estimates by the mean of their interior neighbours.
+    """Extend interior estimates to the boundary in graph-distance layers.
 
     Discrete curvature operators are not defined on the rim of an open scan and
     otherwise produce large artificial extrema there.
@@ -44,10 +44,20 @@ def _extend_to_boundary(mesh: TriMesh, values: np.ndarray) -> np.ndarray:
         return values
     neighbors, _ = mesh.neighbors_and_link()
     result = values.copy()
-    for vertex in boundary:
-        interior = [item for item in neighbors[vertex] if item not in boundary]
-        if interior:
-            result[vertex] = float(np.mean(values[interior]))
+    # Extend in simultaneous graph-distance layers. Never seed from raw rim
+    # curvature: corner vertices may have no direct interior neighbour.
+    unresolved = set(boundary)
+    while unresolved:
+        updates = {}
+        for vertex in sorted(unresolved):
+            known = sorted(neighbors[vertex] - unresolved)
+            if known:
+                updates[vertex] = float(np.mean(result[known]))
+        if not updates:
+            raise ValueError("curvature boundary component has no interior vertices")
+        for vertex, value in updates.items():
+            result[vertex] = value
+        unresolved.difference_update(updates)
     return result
 
 

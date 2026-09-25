@@ -38,7 +38,10 @@ def bottleneck(first: list[tuple[float, float]], second: list[tuple[float, float
 
 
 def compare_reports(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
-    for key in ("scalar", "geometry", "surface"):
+    for report in (first, second):
+        if report.get("schema_version") not in (None, 1):
+            raise ValueError("unsupported descriptor schema_version")
+    for key in ("schema_version", "parameters", "scalar", "geometry", "surface", "persistence_threshold"):
         if first.get(key) != second.get(key):
             raise ValueError(f"descriptors differ in {key!r}: {first.get(key)!r} vs {second.get(key)!r}")
     for name, report in (("first", first), ("second", second)):

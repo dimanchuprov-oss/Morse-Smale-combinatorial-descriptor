@@ -104,9 +104,9 @@ area) and therefore independent of mesh density: Gaussian curvature is the
 angle deficit divided by the barycentric area, mean curvature is the signed
 cotangent-Laplacian estimate (positive on a dome whose normals point towards
 +Z), and the shape index is +1 on a dome, 0 on a saddle and -1 on a bowl.
-Values on the rim of an open surface are replaced by the mean of their
-interior neighbours. Curvature is noise-sensitive: on raw scans smooth first
-(`--sigma`, larger `--voxel-size`) or most critical points will be noise.
+Values on the rim of an open surface are extended in layers from interior
+neighbours, including corners without direct interior neighbours. Curvature is noise-sensitive: on raw scans smooth first
+(`--sigma` with raster geometry, larger `--voxel-size`) or most critical points will be noise.
 
 Persistence filtering also works on reconstructed meshes:
 
@@ -204,3 +204,41 @@ This is a topology-first baseline, not a face recognition system. A camera-Z
 height field is pose-dependent. For biometric use, canonicalize pose or replace
 height with an intrinsic scalar such as curvature or geodesic distance, and add
 temporal persistence tracking before identity modeling.
+
+## Reproducible repeat-scan experiment
+
+The versioned JSON contract is documented in [docs/DATA_CONTRACT.md](docs/DATA_CONTRACT.md).
+Reports include effective processing parameters; comparison rejects incompatible
+settings. Heuristic and TTK arcs both reference critical-point IDs; masked rim
+endpoints use a null `destination_id` and a separate `destination_vertex_id`.
+
+`--sigma` (in pixels) and `--median-size` apply only to raster geometry.
+Nontrivial smoothing options with Delaunay/Poisson are rejected. Periodic rasters
+use wrapped filters. Boundary curvature is extended from interior vertices in
+layers, including corners without direct interior neighbours; a boundary
+component without interior samples is rejected.
+
+Copy and adapt [examples/repeat_scans.json](examples/repeat_scans.json), then run:
+
+```bash
+python -m morse_lidar.experiment examples/repeat_scans.json runs/repeats-001
+```
+
+Paths are relative to the manifest. The example assumes segmented point clouds
+in metres, with Y up; its parameters are a starting protocol, not calibrated
+sensor settings. Use at least two independent scans of one object, preferably
+3–5 repeats of each of several objects plus a changed-object control. Assign the
+changed object its own label. Keep units, cropping and acquisition procedure
+consistent. PCA does not guarantee pose alignment for symmetric objects.
+
+Choose settings before evaluating the repeats and use the same settings for all
+inputs. The runner creates a new output directory with the manifest, individual
+reports and logs, input hashes, dependency versions and all pairwise distances
+in `results.json`. Compare within-object distances with between-object distances
+and inspect raster coverage; a small synthetic distance alone is not evidence of
+real-scan repeatability. `null` distances mean no finite match and must not be
+interpreted as zero. Fixed rows/columns and sigma do not imply a fixed physical
+smoothing radius when bounding boxes differ; inspect `raster_spacing` as well.
+
+No real repeat-scan dataset is bundled. The automated experiment test uses
+explicitly synthetic fixtures and does not constitute a real-scan experiment.

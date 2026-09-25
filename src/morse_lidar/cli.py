@@ -96,6 +96,10 @@ def _validate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
         parser.error("--poisson-density-quantile must be in [0, 1)")
     if args.surface == "periodic" and args.geometry != "raster":
         parser.error("--surface periodic is only supported with raster geometry")
+    if args.median_size < 1 or args.median_size % 2 == 0:
+        parser.error("--median-size must be a positive odd integer")
+    if args.geometry != "raster" and (args.sigma != 0 or args.median_size != 1):
+        parser.error("--sigma and --median-size smoothing requires --geometry raster")
     is_depth = args.input.lower().endswith(".npy")
     if not is_depth and args.pixel_size != 1.0:
         parser.error("--pixel-size applies to depth .npy input; point clouds carry their own metric spacing")
@@ -140,14 +144,14 @@ def _build_mesh(args: argparse.Namespace, report: dict[str, Any]) -> tuple[TriMe
         report["raster_spacing"] = list(spacing)
         if args.raster_output:
             np.save(args.raster_output, depth)
-    depth = denoise_depth(depth, args.median_size, args.sigma)
+    depth = denoise_depth(depth, args.median_size, args.sigma, periodic=args.surface == "periodic")
     mesh = periodic_grid_mesh(depth, spacing) if args.surface == "periodic" else grid_mesh(depth, spacing)
     return mesh, depth
 
 
 def _critical_point_json(point) -> dict[str, Any]:
     return {
-        "id": point.identifier,
+        "id": point.identifier if point.backend == "ttk" else point.vertex,
         "vertex_id": point.vertex,
         "kind": point.kind.value,
         "position": point.position,
@@ -174,9 +178,11 @@ def _descriptor_json(descriptor: Descriptor, mesh: TriMesh, report: dict[str, An
     report["critical_points"] = points
     report["separatrices"] = [
         {
-            "id": arc.identifier,
+            "id": arc.identifier if arc.backend == "ttk" else index,
             "source_id": arc.source,
-            "destination_id": arc.target,
+            "destination_id": None if arc.ends_on_boundary else arc.target,
+            "source_vertex_id": arc.source if arc.backend != "ttk" else None,
+            "destination_vertex_id": arc.target if arc.backend != "ttk" else None,
             "kind": arc.kind,
             "source_cell_id": arc.source_cell_id,
             "destination_cell_id": arc.destination_cell_id,
@@ -185,7 +191,7 @@ def _descriptor_json(descriptor: Descriptor, mesh: TriMesh, report: dict[str, An
             "points": [list(point) for point in arc.points]
             or [[float(value) for value in mesh.vertices[vertex]] for vertex in arc.vertices],
         }
-        for arc in descriptor.separatrices
+        for index, arc in enumerate(descriptor.separatrices)
     ]
 
 
@@ -234,7 +240,11 @@ def main(argv: list[str] | None = None) -> None:
     parser = _parser()
     args = parser.parse_args(argv)
     _validate(parser, args)
-    report: dict[str, Any] = {}
+    report: dict[str, Any] = {
+        "schema_version": 1,
+        "parameters": {key: value for key, value in vars(args).items()
+                       if key not in {"input", "output", "raster_output", "periodic"}},
+    }
     mesh, _ = _build_mesh(args, report)
     if args.scalar != "height":
         mesh = TriMesh(mesh.vertices, mesh.faces, intrinsic_scalar(mesh, args.scalar))
@@ -287,7 +297,7 @@ def main(argv: list[str] | None = None) -> None:
             ],
         }
     with open(args.output, "w", encoding="utf-8") as handle:
-        json.dump(report, handle, indent=2, sort_keys=True)
+        json.dump(report, handle, indent=2, sort_keys=True, allow_nan=False)
     summary = {key: value for key, value in report.items() if key not in {"critical_points", "separatrices", "persistence_diagram", "colored_graph", "quadrilaterals", "ttk_arrays"}}
     print(json.dumps(summary, indent=2, sort_keys=True))
 

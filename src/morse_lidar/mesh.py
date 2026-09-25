@@ -32,6 +32,10 @@ class TriMesh:
             raise ValueError("vertices and values must be finite")
         if len(faces) and (faces.min() < 0 or faces.max() >= len(vertices)):
             raise ValueError("face index is outside vertices")
+        # Own immutable buffers: frozen dataclasses alone do not freeze arrays.
+        vertices = np.frombuffer(vertices.tobytes(), dtype=vertices.dtype).reshape(vertices.shape)
+        faces = np.frombuffer(faces.tobytes(), dtype=faces.dtype).reshape(faces.shape)
+        values = np.frombuffer(values.tobytes(), dtype=values.dtype).reshape(values.shape)
         object.__setattr__(self, "vertices", vertices)
         object.__setattr__(self, "faces", faces)
         object.__setattr__(self, "values", values)

@@ -1,6 +1,9 @@
+import json
+
 import numpy as np
 import pytest
 
+from morse_lidar.cli import _descriptor_json
 from morse_lidar.descriptor import build_ttk_descriptor, validate_colored_graph
 from morse_lidar.mesh import TriMesh, grid_mesh
 from morse_lidar.ttk_backend import export_legacy_vtk, run_ttk_msc, status
@@ -61,3 +64,12 @@ def test_real_ttk_pipeline_builds_trivalent_graph_from_shared_arcs():
     for node in range(result.colored_graph.node_count):
         colors = [edge.color for edge in result.colored_graph.edges if node in (edge.left, edge.right)]
         assert sorted(colors) == ["s", "t", "u"]
+
+    report = {}
+    _descriptor_json(descriptor, mesh, report)
+    json.dumps(report, allow_nan=False)
+    ids = {point["id"] for point in report["critical_points"]}
+    assert None not in ids and len(ids) == len(report["critical_points"])
+    for arc in report["separatrices"]:
+        assert arc["source_id"] in ids and arc["destination_id"] in ids
+        assert arc["source_vertex_id"] is None and arc["destination_vertex_id"] is None

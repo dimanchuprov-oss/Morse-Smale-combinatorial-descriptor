@@ -12,7 +12,7 @@ def load_depth(path: str) -> np.ndarray:
     return field
 
 
-def denoise_depth(depth: np.ndarray, median_size: int = 3, sigma: float = 0.0) -> np.ndarray:
+def denoise_depth(depth: np.ndarray, median_size: int = 3, sigma: float = 0.0, *, periodic: bool = False) -> np.ndarray:
     """Apply optional sensor smoothing; this is not persistence cancellation."""
     result = np.asarray(depth, dtype=float)
     _validate_depth(result)
@@ -27,9 +27,9 @@ def denoise_depth(depth: np.ndarray, median_size: int = 3, sigma: float = 0.0) -
     except ModuleNotFoundError as error:
         raise RuntimeError("install the optional signal extra for depth smoothing") from error
     if median_size > 1:
-        result = median_filter(result, size=median_size, mode="nearest")
+        result = median_filter(result, size=median_size, mode="wrap" if periodic else "nearest")
     if sigma > 0:
-        result = gaussian_filter(result, sigma=sigma, mode="nearest")
+        result = gaussian_filter(result, sigma=sigma, mode="wrap" if periodic else "nearest")
     return result
 
 

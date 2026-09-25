@@ -1,0 +1,23 @@
+{
+  "units": "m",
+  "parameters": {
+    "surface": "open",
+    "geometry": "raster",
+    "msc_backend": "heuristic",
+    "scalar": "height",
+    "up_axis": "y",
+    "align": "pca",
+    "rows": 192,
+    "cols": 256,
+    "voxel_size": 0.01,
+    "median_size": 3,
+    "sigma": 1.0,
+    "persistence_threshold": 0.02
+  },
+  "scans": [
+    {"path": "../data/object_a_01.ply", "object": "a"},
+    {"path": "../data/object_a_02.ply", "object": "a"},
+    {"path": "../data/object_b_01.ply", "object": "b"},
+    {"path": "../data/object_b_02.ply", "object": "b"}
+  ]
+}
