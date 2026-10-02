@@ -137,8 +137,45 @@ def _load_open3d(path: Path) -> PointCloud:
     return PointCloud(np.asarray(cloud.points))
 
 
+def _load_obj(path: Path) -> PointCloud:
+    """Vertices of a Wavefront OBJ mesh (``v x y z [r g b]`` lines)."""
+    points = []
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            values = line.split()
+            if values[:1] == ["v"]:
+                if len(values) < 4:
+                    raise ValueError("OBJ vertex has fewer than three coordinates")
+                points.append([float(values[1]), float(values[2]), float(values[3])])
+    if not points:
+        raise ValueError("OBJ file has no vertices")
+    return PointCloud(np.asarray(points, dtype=float))
+
+
+def _load_stl(path: Path) -> PointCloud:
+    """Unique triangle corners of an ASCII or binary STL mesh."""
+    data = path.read_bytes()
+    count = int(np.frombuffer(data, dtype="<u4", count=1, offset=80)[0]) if len(data) >= 84 else -1
+    if count >= 0 and len(data) == 84 + 50 * count:
+        record = np.dtype([("normal", "<f4", 3), ("corners", "<f4", (3, 3)), ("attribute", "<u2")])
+        corners = np.frombuffer(data, dtype=record, count=count, offset=84)["corners"].reshape(-1, 3)
+    else:
+        text = data.decode("ascii", errors="replace")
+        corners = np.asarray(
+            [[float(value) for value in line.split()[1:4]] for line in text.splitlines() if line.strip().startswith("vertex")],
+            dtype=float,
+        ).reshape(-1, 3)
+    if len(corners) == 0:
+        raise ValueError("STL file has no triangles")
+    # Every vertex is repeated once per incident triangle in STL.
+    return PointCloud(np.unique(corners.astype(float), axis=0))
+
+
 def load_point_cloud(path: str | Path) -> PointCloud:
-    """Load PLY, PCD, LAS/LAZ, XYZ, CSV, or NumPy point arrays."""
+    """Load PLY, PCD, LAS/LAZ, XYZ, CSV, OBJ, STL, or NumPy point arrays.
+
+    Meshes (OBJ, STL, PLY with faces) contribute their vertices only.
+    """
     source = Path(path)
     suffix = source.suffix.lower()
     if suffix == ".npy":
@@ -164,6 +201,10 @@ def load_point_cloud(path: str | Path) -> PointCloud:
         return _load_text_xyz(source)
     if suffix == ".csv":
         return _load_text_xyz(source, delimiter=",")
+    if suffix == ".obj":
+        return _load_obj(source)
+    if suffix == ".stl":
+        return _load_stl(source)
     raise ValueError(f"unsupported point-cloud format: {suffix or '<none>'}")
 
 
