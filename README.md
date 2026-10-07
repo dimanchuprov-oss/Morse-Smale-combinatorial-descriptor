@@ -309,6 +309,11 @@ people, in about 40 s on 10 worker processes. It writes:
 - `face_nearest.png`: the closest same-person and other-person scan of each scan;
 - `face_examples.png`: where the surfaces of telling pairs differ.
 
+`tools/face_before_after.py` compares these results with the code of PR #4 on
+the same scans (`face_pairs_pr4_method.csv`) and draws `face_before_after.png`.
+In Dima's protocol (the first scan of every person enrolled, the other nine as
+probes) the right person comes first for 7 of 9 probes, against 5 of 9 before.
+
 | pairs | same person | different people | EER |
 |---|---|---|---|
 | all | 13, median 0.62 mm | 78, median 1.88 mm | 23% |
