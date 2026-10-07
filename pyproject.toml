@@ -21,6 +21,8 @@ plot = ["matplotlib>=3.7"]
 [project.scripts]
 morse-lidar = "morse_lidar.cli:main"
 morse-lidar-compare = "morse_lidar.compare:main"
+morse-lidar-watch = "morse_lidar.watch:main"
+morse-lidar-experiment = "morse_lidar.experiment:main"
 morse-lidar-face = "morse_lidar.face_cli:main"
 
 [tool.setuptools.packages.find]

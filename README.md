@@ -72,6 +72,36 @@ morse-lidar --input scan.ply --output scan.json \
 * `--align pca` centres the cloud and rotates its principal axes onto XYZ,
   so the height field does not depend on how the scanner was held.
 
+### Live processing while scanning (e.g. Revopoint Range)
+
+Scanner drivers are proprietary, so capture stays in the vendor application
+(Revo Scan for Revopoint devices) and this package watches its export folder.
+OBJ and STL exports are read in addition to PLY (vertices only; faces are
+rebuilt by the selected `--geometry`).
+
+```bash
+morse-lidar-watch ~/Scans/export -- \
+    --geometry delaunay --voxel-size 1 --persistence-threshold 0.5
+```
+
+Everything after `--` is passed to `morse-lidar` unchanged, so every scan of a
+session is processed with identical parameters. Each new file is processed once
+it has stopped changing (`--settle`, seconds), compared with the reference scan
+(`--reference`, default: the first scan) and with the previous one, and logged
+to `EXPORT/morse-lidar/scans.csv` together with its SHA-256. A draft manifest
+for the repeat-scan experiment below is kept up to date in
+`manifest.draft.json`; object labels are guessed from file names up to the last
+`_` (`vase_01.ply` → `vase`) and must be checked by hand. `--units` (default
+`mm`, as exported by Revo Scan) is recorded in the manifest; thresholds and
+voxel sizes are in the same units as the exported coordinates.
+
+Descriptors are written as `<file name>.json` (so `scan.ply` and `scan.obj`
+do not collide). The session — processed files, reference and previous scan —
+is kept in `session.json`, so the watcher can be stopped with Ctrl+C and
+restarted on the same folder; a reference computed with different options is
+rejected. The `morse-lidar-watch` and `morse-lidar-experiment` commands are
+installed by `pip install -e .`.
+
 ### Comparing descriptors
 
 Every report contains the persistence diagram of the scalar field
