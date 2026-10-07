@@ -22,7 +22,7 @@ from morse_lidar.face import (
     simulate_view,
     visible_from,
 )
-from morse_lidar.face_cli import main
+from morse_lidar.face_cli import _person, main
 
 
 def synthetic_head(depth=95.0, width=75.0, height=115.0, nose=20.0, chin=0.0, centre=(40.0, -30.0)) -> np.ndarray:
@@ -118,11 +118,55 @@ def test_visible_from_keeps_steep_but_visible_surfaces():
     assert not seen[normals[:, 0] < 0.0].any()
 
 
+def test_extract_head_drops_body_parts_that_do_not_touch_the_head():
+    # A plate in front of the neck, 70-110 mm under the chin, as a chest seen below a raised chin.
+    side, level = np.meshgrid(np.arange(-90.0, 30.0, 2.0), np.arange(890.0, 930.0, 2.0))
+    plate = np.column_stack((np.full(side.size, 165.0), side.ravel(), level.ravel()))
+    head = extract_head(np.vstack((PERSON_A, plate))).points
+    assert not ((head[:, 0] > 115.0) & (head[:, 2] < -170.0)).any()
+    assert len(head) == pytest.approx(len(extract_head(PERSON_A).points), rel=0.01)
+
+
+def test_extract_head_reports_the_dropped_share():
+    side, level = np.meshgrid(np.arange(-90.0, 30.0, 2.0), np.arange(890.0, 930.0, 2.0))
+    plate = np.column_stack((np.full(side.size, 165.0), side.ravel(), level.ravel()))
+    assert extract_head(PERSON_A).dropped < 0.01
+    assert 0.02 < extract_head(np.vstack((PERSON_A, plate))).dropped < 0.2
+
+
+def test_shared_area_does_not_depend_on_the_sampling_density():
+    # The same 80 mm hemisphere (402 cm^2) sampled at 1.5 and at 3.5 mm spacing.
+    rng = np.random.default_rng(0)
+    areas = []
+    for spacing in (1.5, 3.5):
+        directions = rng.normal(size=(int(2 * np.pi * 80**2 / spacing**2), 3))
+        directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+        directions[:, 0] = np.abs(directions[:, 0])
+        areas.append(enroll(80.0 * directions).areas.sum() / 100.0)
+    assert areas == pytest.approx([402.0, 402.0], rel=0.08)
+
+
 @pytest.mark.parametrize("yaw", [0.0, 60.0, -90.0, 150.0])
 def test_registration_recovers_a_scrambled_partial_view(yaw):
     gallery = enroll(extract_head(PERSON_A[0::2]))
     probe = extract_head(simulate_view(PERSON_A[1::2], math.radians(yaw), seed=3))
-    assert register(probe.points, gallery).rms < 1.5
+    registration = register(probe.points, gallery)
+    distance, _ = gallery.tree.query(registration.apply(probe.points))
+    assert registration.inliers > 0.95 and np.median(distance) < 1.5  # 2 mm voxels: ~1 mm to the nearest point
+
+
+def test_two_partial_views_with_a_small_overlap_are_registered_without_bias():
+    # Front halves of views from 40 degrees left and right, like two frontal
+    # snapshots of a turned head: they share about 55% of their points, less than
+    # the 80% a fixed trimming ratio kept, which pulled the pose towards the parts
+    # only one view has. (Whole synthetic heads are nearly symmetric under a turn
+    # by 180 degrees, so the test keeps the face side as real snapshots do.)
+    views = [extract_head(simulate_view(PERSON_A, math.radians(yaw), seed=7, scramble=False)) for yaw in (-40.0, 40.0)]
+    probe, gallery = (view.points[view.points[:, 0] > 0.0] for view in views)
+    result = match(probe, gallery, topology=False)
+    truth = probe + np.subtract(views[0].offset, views[1].offset)
+    assert np.median(np.linalg.norm(result.registration.apply(probe) - truth, axis=1)) < 1.5
+    assert result.geometric < 0.6 and result.shared_cm2 > 50.0
 
 
 def test_match_scores_same_person_below_other_person():
@@ -131,7 +175,7 @@ def test_match_scores_same_person_below_other_person():
         probe = extract_head(simulate_view(cloud[1::2], math.radians(45.0), seed=5))
         scores = {label: match(probe.points, head, topology=False).geometric for label, head in galleries.items()}
         other = "B" if person == "A" else "A"
-        assert scores[person] < 1.5 < scores[other]
+        assert scores[person] < 0.5 and scores[other] > 3 * scores[person]
 
 
 def test_radial_map_ignores_points_outside_the_head_band():
@@ -185,7 +229,7 @@ def test_cli_experiment_then_calibrated_compare(tmp_path, capsys):
     summary = json.loads((out / "face_summary.json").read_text(encoding="utf-8"))
     assert summary["genuine_pairs"] == 6 and summary["impostor_pairs"] == 6 and summary["failed_pairs"] == 0
     assert summary["geometric_mm"]["eer"] == 0.0
-    assert summary["settings"] == {"up_axis": "z", "units": "mm"}
+    assert summary["settings"] == {"up_axis": "z", "units": "mm", "method": 2}
     assert summary["real_probes"]["probe.xyz"]["best_match"] == "B"
     assert (out / "face_scores.csv").read_text(encoding="utf-8").count("\n") == 1 + 12 + 2
     capsys.readouterr()
@@ -196,9 +240,19 @@ def test_cli_experiment_then_calibrated_compare(tmp_path, capsys):
     assert result["best_match"] == "B" and result["decision"] == "same"
     main(["compare", str(probe), "--gallery", f"A={a}", "--up-axis", "z", "--no-topology"])
     assert json.loads(capsys.readouterr().out)["decision"] is None
+    main(["compare", str(probe), "--gallery", f"A={a}", "--gallery", f"B={b}", "--up-axis", "z", "--no-topology",
+          "--calibration", calibration, "--min-area", "100000"])  # fmt: skip
+    result = json.loads(capsys.readouterr().out)
+    assert result["decision"] == "insufficient overlap" and result["best_match"] is None
     with pytest.raises(SystemExit, match="calibration was made"):
         main(["compare", str(probe), "--gallery", f"A={a}", "--up-axis", "z", "--units", "cm", "--no-topology",
               "--calibration", calibration])  # fmt: skip
+    old = json.loads((out / "face_summary.json").read_text(encoding="utf-8"))
+    old["settings"].pop("method")  # a summary of the previous method version
+    (out / "old.json").write_text(json.dumps(old), encoding="utf-8")
+    with pytest.raises(SystemExit, match="older version"):
+        main(["compare", str(probe), "--gallery", f"A={a}", "--up-axis", "z", "--no-topology",
+              "--calibration", str(out / "old.json")])  # fmt: skip
 
 
 def test_cli_experiment_survives_a_bad_real_probe(tmp_path):
@@ -212,6 +266,51 @@ def test_cli_experiment_survives_a_bad_real_probe(tmp_path):
     assert summary["real_probes"]["bad.xyz"]["decision"] is None
     assert set(summary["real_probes"]["bad.xyz"]["failed"]) == {"A", "B"}
     assert summary["failed_pairs"] == 2
+
+
+def test_person_label_is_the_file_name_without_the_scan_number():
+    from pathlib import Path
+
+    assert _person(Path("Ваня1.ply")) == "Ваня"
+    assert _person(Path("scan_12.xyz")) == "scan"
+    assert _person(Path("007.ply")) == "007"
+
+
+def test_cli_matrix_compares_every_pair_of_named_scans(tmp_path, capsys):
+    pytest.importorskip("matplotlib")
+    paths = []
+    for name, cloud, yaw in (("A1", PERSON_A, -30.0), ("A2", PERSON_A, 30.0), ("B1", PERSON_B, -30.0),
+                             ("B2", PERSON_B, 30.0)):  # fmt: skip
+        view = simulate_view(cloud, math.radians(yaw), seed=len(paths))
+        paths.append(str(_write_xyz(tmp_path / f"{name}.xyz", view)))
+    out = tmp_path / "matrix"
+    main(["matrix", *paths, "--up-axis", "z", "--no-topology", "--jobs", "1", "--min-area", "10", "--out", str(out)])
+    summary = json.loads((out / "face_matrix_summary.json").read_text(encoding="utf-8"))
+    assert summary["people"] == {"A": ["A1", "A2"], "B": ["B1", "B2"]}
+    assert summary["pairs"] == {"genuine": 2, "impostor": 4, "failed": 0, "reliable": 6}
+    assert summary["identification"]["rank1_correct"] == 4
+    assert summary["reliable_pairs"]["geometric_mm"]["eer"] == 0.0
+    decisions = summary["decisions"]
+    assert decisions["same_person_same"] == 2 and decisions["different_people_different"] == 4
+    assert summary["identification"]["with_area_limit"]["identified"] == 4
+    assert all(scan["dropped_fraction"] is not None for scan in summary["scans"].values())
+    assert (out / "face_pairs.csv").read_text(encoding="utf-8").count("\n") == 1 + 6
+    for name in ("face_matrix.png", "face_score_vs_area.png", "face_nearest.png", "face_examples.png"):
+        assert (out / name).stat().st_size > 10_000
+    capsys.readouterr()
+    calibration = str(out / "face_matrix_summary.json")
+    main(["compare", paths[1], "--gallery", f"A={paths[0]}", "--gallery", f"B={paths[2]}", "--up-axis", "z",
+          "--no-topology", "--calibration", calibration])  # fmt: skip
+    result = json.loads(capsys.readouterr().out)
+    assert result["best_match"] == "A" and result["decision"] == "same" and result["min_shared_cm2"] == 10.0
+
+
+def test_cli_matrix_rejects_duplicate_scan_names(tmp_path):
+    (tmp_path / "x").mkdir()
+    first = _write_xyz(tmp_path / "A1.xyz", PERSON_A[:500])
+    second = _write_xyz(tmp_path / "x" / "A1.xyz", PERSON_A[:500])
+    with pytest.raises(SystemExit, match="unique"):
+        main(["matrix", str(first), str(second), "--up-axis", "z", "--out", str(tmp_path / "out")])
 
 
 def test_cli_plots_are_written(tmp_path):

@@ -1,7 +1,8 @@
 {
   "settings": {
     "up_axis": "y",
-    "units": "mm"
+    "units": "mm",
+    "method": 2
   },
   "people": [
     "A",
@@ -32,37 +33,39 @@
   "note": "genuine probes come from the same capture as the gallery; thresholds are estimated on the same data and on few people, so they are optimistic",
   "geometric_mm": {
     "eer": 0.0,
-    "threshold": 2.339413813949569,
-    "genuine_max": 1.5726412827046865,
-    "impostor_min": 3.1061863451944514,
-    "genuine_median": 1.4685313490128071,
-    "impostor_median": 4.010773359652071
+    "threshold": 1.5562032649994548,
+    "genuine_max": 1.066970214472985,
+    "impostor_min": 2.045436315525925,
+    "genuine_median": 0.970301430810653,
+    "impostor_median": 2.1487574646747003
   },
   "topological_mm": {
-    "eer": 0.25,
-    "threshold": 10.593449223357663,
-    "genuine_max": 17.432699840184284,
-    "impostor_min": 6.811370683073918,
-    "genuine_median": 6.631895442450791,
-    "impostor_median": 13.394695465808699
+    "eer": 0.17307692307692307,
+    "threshold": 10.858048885374213,
+    "genuine_max": 23.475393678533834,
+    "impostor_min": 7.43348658443476,
+    "genuine_median": 6.4033116392566996,
+    "impostor_median": 14.34146739262026
   },
   "real_probes": {
     "raw_preview_95b40cf3-65cc-4b20-999d-b82a85677891.ply": {
       "scores": {
         "A": {
-          "geometric_mm": 2.096122304431554,
-          "topological_mm": 5.454147819262232,
-          "overlap": 0.693259385665529
+          "geometric_mm": 2.2135444198028598,
+          "shared_cm2": 252.90005215429915,
+          "topological_mm": 10.780148283454047,
+          "overlap": 0.6013678553981436
         },
         "B": {
-          "geometric_mm": 2.4148857464008207,
-          "topological_mm": 10.189847171640068,
-          "overlap": 0.6461177474402731
+          "geometric_mm": 2.0064319384585483,
+          "shared_cm2": 224.68783600403873,
+          "topological_mm": 6.436587347164263,
+          "overlap": 0.5493404982901807
         }
       },
-      "best_match": "A",
+      "best_match": "B",
       "decision": "uncertain",
-      "margin_mm": 0.31876344196926665,
+      "margin_mm": 0.20711248134431148,
       "failed": {}
     }
   }

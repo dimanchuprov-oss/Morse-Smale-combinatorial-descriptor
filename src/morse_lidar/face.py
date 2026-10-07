@@ -1,18 +1,27 @@
 """Verify that two 3D head scans show the same person, from any viewing angle.
 
-A probe (a partial scan taken from an arbitrary direction) is compared with an
-enrolled gallery head in three steps:
+Two scans (full heads or partial views taken from arbitrary directions) are
+compared in three steps:
 
 1. Both clouds are reduced to the head: the top of the cloud along the up axis,
    a fixed height below it and a fixed radius around the vertical head axis.
-   The head is moved so that its axis is the Z axis and its top is at ``z = 0``.
-2. The probe is rigidly registered to the gallery. Point-to-point ICP is
-   started from a grid of rotations about the vertical axis and small tilts;
-   the best starts are refined by point-to-plane ICP. The viewing angle of the
-   probe therefore does not need to be known.
+   Small fragments and body parts that do not touch the head (shoulders, chest)
+   are dropped. The head is moved so that its axis is the Z axis and its top is
+   at ``z = 0``.
+2. The scans are rigidly registered in both directions. ICP is started from a
+   grid of rotations about the vertical axis, small tilts and shifts; at every
+   stage only point pairs closer than a shrinking distance gate are used, so a
+   small overlap is not pulled towards the parts that only one scan sees. The
+   pose under which most points of one scan lie on the other wins. The viewing
+   angles therefore do not need to be known.
 3. Scores are computed on the registered pair:
 
-   * ``geometric``: trimmed RMS distance from probe points to the gallery;
+   * ``geometric``: RMS point-to-plane distance between the scans over the
+     surface where they come within ``GATE`` of each other, averaged over both
+     directions;
+   * ``shared_cm2``: area of that common surface, estimated from the point
+     density of each scan. Small scores on a small common area are not
+     evidence: a patch fits many faces;
    * ``topological``: bottleneck distance between the lower-star persistence
      diagrams of the radial height field ``r(theta, z)`` of both heads, taken
      over the cylindrical cells seen by both scans (see :func:`radial_map`);
@@ -34,8 +43,7 @@ import numpy as np
 from .mesh import grid_mesh
 from .pointcloud import PointCloud, set_up_axis, voxel_downsample
 
-TRIM = 0.8
-# Rotation centre for pose starts: roughly the middle of an adult head below its top.
+# Roughly the middle of an adult head below its top; normals point away from it.
 HEAD_CENTRE = np.array([0.0, 0.0, -110.0])
 # Sanity limits for the head section 50-120 mm below the top: the widest adult
 # head with hair is well under 350 mm, while a section through a body lying
@@ -43,6 +51,26 @@ HEAD_CENTRE = np.array([0.0, 0.0, -110.0])
 MAX_SECTION_WIDTH = 350.0
 MIN_HEAD_HEIGHT = 120.0
 MAX_SLOPE_TOLERANCE = 30.0
+# Pieces closer than FRAGMENT_LINK mm form one part of the scan. Parts with less
+# than MIN_FRAGMENT of the points are noise; parts that lie entirely more than
+# DETACHED_BELOW mm under the top are the shoulders or the chest seen below the chin.
+FRAGMENT_LINK = 6.0
+MIN_FRAGMENT = 0.03
+DETACHED_BELOW = 110.0
+# Scores compare the surfaces where the registered scans come within GATE mm.
+GATE = 5.0
+# A pose is judged by the fraction of points within INLIER_DISTANCE mm of the other scan.
+INLIER_DISTANCE = 2.5
+# The surface a point stands for is estimated from its AREA_NEIGHBOURS nearest
+# neighbours, so that sparse and dense scans measure the same area.
+AREA_NEIGHBOURS = 12
+# Bumped whenever the crop or the scores change: calibrations of another version
+# do not apply.
+METHOD_VERSION = 2
+# Start shifts (mm, gallery frame) for registration: the centres of two partial
+# views of one head can lie several centimetres apart.
+SHIFTS = ((0.0, 0.0, 0.0), (40.0, 0.0, 0.0), (-40.0, 0.0, 0.0), (0.0, 40.0, 0.0), (0.0, -40.0, 0.0),
+          (0.0, 0.0, 30.0), (0.0, 0.0, -30.0))  # fmt: skip
 
 
 def _kd_tree(points: np.ndarray) -> Any:
@@ -67,6 +95,8 @@ class Head:
     points: np.ndarray
     # Where the canonical origin lies in the upright input frame.
     offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    # Fraction of the cropped points dropped as fragments or detached body parts.
+    dropped: float = 0.0
 
 
 def locate_head(cloud: np.ndarray) -> tuple[np.ndarray, float]:
@@ -84,19 +114,42 @@ def locate_head(cloud: np.ndarray) -> tuple[np.ndarray, float]:
     return _head_axis(band[:, :2]), top
 
 
+def _attached(points: np.ndarray) -> np.ndarray:
+    """Mask of the parts of a canonical head that belong to the head itself.
+
+    Parts are groups of points linked by gaps under ``FRAGMENT_LINK``. Small
+    parts are scanner noise; parts lying entirely more than ``DETACHED_BELOW``
+    under the top are shoulders or chest, whose shape depends on clothes and
+    posture rather than on the person.
+    """
+    try:
+        from scipy.sparse import coo_matrix
+        from scipy.sparse.csgraph import connected_components
+    except ModuleNotFoundError as error:
+        raise RuntimeError("install the optional signal extra: python -m pip install '.[signal]'") from error
+    pairs = _kd_tree(points).query_pairs(FRAGMENT_LINK, output_type="ndarray")
+    graph = coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(len(points), len(points)))
+    _, labels = connected_components(graph, directed=False)
+    sizes = np.bincount(labels)
+    highest = np.full(len(sizes), -np.inf)
+    np.maximum.at(highest, labels, points[:, 2])
+    return (sizes[labels] >= max(50, MIN_FRAGMENT * len(points))) & (highest[labels] > -DETACHED_BELOW)
+
+
 def extract_head(
     points: np.ndarray,
     up_axis: str = "z",
     scale: float = 1.0,
-    height: float = 250.0,
-    radius: float = 150.0,
+    height: float = 230.0,
+    radius: float = 140.0,
     voxel: float = 2.0,
 ) -> Head:
     """Cut the head out of a body or head scan.
 
     ``scale`` converts input units to millimetres (1000 for metres). The head
     axis comes from the horizontal section 50-120 mm below the top, which lies
-    above the shoulders for an upright person.
+    above the shoulders for an upright person. Noise fragments and body parts
+    that do not touch the head are dropped (see :func:`_attached`).
     """
     if height <= 0 or radius <= 0 or voxel <= 0:
         raise ValueError("height, radius and voxel must be positive")
@@ -111,7 +164,10 @@ def extract_head(
         raise ValueError(f"the head region is only {extent:.0f} mm tall; the up axis or the units are probably wrong")
     offset = np.array([centre[0], centre[1], top])
     head = voxel_downsample(PointCloud(cloud[keep] - offset), voxel).points
-    return Head(head, (float(offset[0]), float(offset[1]), float(offset[2])))
+    attached = _attached(head)
+    if attached.sum() < 100:
+        raise ValueError("head region contains fewer than 100 points after removing fragments")
+    return Head(head[attached], (float(offset[0]), float(offset[1]), float(offset[2])), float(1.0 - attached.mean()))
 
 
 def _head_axis(section: np.ndarray) -> np.ndarray:
@@ -262,118 +318,150 @@ def _kabsch(source: np.ndarray, target: np.ndarray) -> tuple[np.ndarray, np.ndar
     return rotation, target_mean - rotation @ source_mean
 
 
-def _trimmed_rms(distance: np.ndarray) -> float:
-    kept = np.sort(distance)[: max(1, round(TRIM * len(distance)))]
-    return float(np.sqrt(np.mean(kept**2)))
-
-
 @dataclass(frozen=True)
 class Enrolled:
-    """A gallery head prepared for matching: points, normals and a KD-tree."""
+    """A head prepared for matching: points, normals, surface per point (mm^2) and a KD-tree."""
 
     points: np.ndarray
     normals: np.ndarray
+    areas: np.ndarray
     tree: Any = field(repr=False)
+
+
+def _point_areas(points: np.ndarray, tree: Any) -> np.ndarray:
+    """Surface each point stands for, pi r^2 / (k + 1/2) with r the distance to the k-th neighbour.
+
+    Unlike a fixed area per point this does not depend on how densely the
+    scanner sampled the face (within a few per cent from 1.5 to 3.5 mm spacing).
+    """
+    count = min(AREA_NEIGHBOURS, len(points) - 1)
+    distance, _ = tree.query(points, count + 1)
+    return np.pi * distance[:, -1] ** 2 / (count + 0.5)
 
 
 def enroll(head: Head | np.ndarray) -> Enrolled:
     points = head.points if isinstance(head, Head) else np.asarray(head, dtype=float)
     if len(points) < 30:
-        raise ValueError("a gallery head needs at least 30 points")
-    return Enrolled(points, estimate_normals(points, HEAD_CENTRE), _kd_tree(points))
+        raise ValueError("a head needs at least 30 points")
+    tree = _kd_tree(points)
+    return Enrolled(points, estimate_normals(points, HEAD_CENTRE), _point_areas(points, tree), tree)
 
 
-def _icp(
-    source: np.ndarray,
-    gallery: Enrolled,
-    rotation: np.ndarray,
-    translation: np.ndarray,
-    iterations: int,
-    point_to_plane: bool,
-) -> tuple[np.ndarray, np.ndarray, float]:
-    for _ in range(iterations):
-        moved = source @ rotation.T + translation
-        distance, index = gallery.tree.query(moved)
-        inliers = distance <= np.quantile(distance, TRIM)
-        moved, target = moved[inliers], gallery.points[index[inliers]]
-        if point_to_plane:
+def _gated_point_to_point(
+    source: np.ndarray, gallery: Enrolled, rotation: np.ndarray, translation: np.ndarray, gates: tuple[float, ...]
+) -> tuple[np.ndarray, np.ndarray]:
+    """Coarse ICP: Kabsch steps on the pairs closer than each gate in turn."""
+    for gate in gates:
+        for _ in range(3):
+            moved = source @ rotation.T + translation
+            # The bound lets the tree skip far branches; missing neighbours come back as inf.
+            distance, index = gallery.tree.query(moved, distance_upper_bound=gate)
+            inliers = distance < gate
+            if inliers.sum() < 10:
+                break
+            step_rotation, step_translation = _kabsch(moved[inliers], gallery.points[index[inliers]])
+            rotation, translation = step_rotation @ rotation, step_rotation @ translation + step_translation
+    return rotation, translation
+
+
+def _gated_point_to_plane(
+    source: np.ndarray, gallery: Enrolled, rotation: np.ndarray, translation: np.ndarray, gates: tuple[float, ...]
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fine ICP: point-to-plane steps on the pairs closer than each gate in turn.
+
+    A fixed trimming ratio (keep the closest 80%) biases the pose when the scans
+    share less than that fraction of their surface; a distance gate does not.
+    """
+    for gate in gates:
+        for _ in range(8):
+            moved = source @ rotation.T + translation
+            distance, index = gallery.tree.query(moved, distance_upper_bound=gate)
+            inliers = distance < gate
+            if inliers.sum() < 30:
+                break
+            moved, target, normal = moved[inliers], gallery.points[index[inliers]], gallery.normals[index[inliers]]
             # Linearised (R p + t - q) . n = 0 for a small rotation vector w:
             # w . (p x n) + t . n = (q - p) . n.
-            normal = gallery.normals[index[inliers]]
             system = np.column_stack((np.cross(moved, normal), normal))
             solution, *_ = np.linalg.lstsq(system, np.einsum("ij,ij->i", target - moved, normal), rcond=None)
             step_rotation, step_translation = _rotation_vector(solution[:3]), solution[3:]
-        else:
-            step_rotation, step_translation = _kabsch(moved, target)
-        rotation, translation = step_rotation @ rotation, step_rotation @ translation + step_translation
-        if np.linalg.norm(step_translation) < 1e-3 and np.trace(step_rotation) > 3.0 - 1e-8:
-            break
-    distance, _ = gallery.tree.query(source @ rotation.T + translation)
-    return rotation, translation, _trimmed_rms(distance)
+            rotation, translation = step_rotation @ rotation, step_rotation @ translation + step_translation
+            if np.linalg.norm(step_translation) < 1e-3 and np.trace(step_rotation) > 3.0 - 1e-8:
+                break
+    return rotation, translation
+
+
+def _inliers(points: np.ndarray, gallery: Enrolled, rotation: np.ndarray, translation: np.ndarray) -> float:
+    distance, _ = gallery.tree.query(points @ rotation.T + translation, distance_upper_bound=INLIER_DISTANCE)
+    return float(np.mean(distance < INLIER_DISTANCE))
+
+
+def _upper_centre(points: np.ndarray) -> np.ndarray:
+    """Centroid of the part within 150 mm under the top, which every view of a face shares."""
+    upper = points[points[:, 2] > -150.0]
+    return (upper if len(upper) >= 30 else points).mean(axis=0)
 
 
 @dataclass(frozen=True)
 class Registration:
     rotation: np.ndarray
     translation: np.ndarray
-    rms: float
+    # Fraction of the moved points within INLIER_DISTANCE of the target.
+    inliers: float
 
     def apply(self, points: np.ndarray) -> np.ndarray:
         return points @ self.rotation.T + self.translation
+
+    def inverse(self, inliers: float) -> Registration:
+        return Registration(self.rotation.T, -self.rotation.T @ self.translation, inliers)
 
 
 def register(
     probe: np.ndarray,
     gallery: Enrolled | np.ndarray,
     yaw_step: float = 15.0,
-    tilts: tuple[float, ...] = (-10.0, 0.0, 10.0),
-    back_shifts: tuple[float, ...] = (0.0, 35.0, 70.0),
+    tilts: tuple[float, ...] = (-15.0, 0.0, 15.0),
+    shifts: tuple[tuple[float, float, float], ...] = SHIFTS,
     refine: int = 8,
-    coarse_iterations: int = 10,
-    fine_iterations: int = 30,
-    coarse_sample: int = 600,
-    fine_sample: int = 6000,
+    coarse_gates: tuple[float, ...] = (25.0, 15.0, 10.0),
+    fine_gates: tuple[float, ...] = (8.0, 5.0, 3.5, 2.5, 2.0),
+    coarse_sample: int = 300,
+    fine_sample: int = 4000,
     seed: int = 0,
 ) -> Registration:
     """Rigidly align ``probe`` to ``gallery`` (both canonical heads).
 
-    Point-to-point ICP is started from every rotation about the vertical axis
-    (``yaw_step`` degrees) combined with ``tilts`` about a horizontal axis
-    through the head centre (the probe's own y axis, so a nod or a roll
-    depending on the probe pose); the ``refine`` best starts are refined by point-to-plane ICP
-    and the one with the smallest trimmed RMS over all probe points wins.
+    Starts combine every rotation about the vertical axis (``yaw_step``
+    degrees) with ``tilts`` about the probe's y axis (a nod or a roll depending
+    on the probe pose), turning the probe about the centre of its upper part,
+    placing that centre on the gallery's and adding ``shifts``. Coarse
+    point-to-point ICP runs from every start on a sample of the probe; the
+    ``refine`` starts with most inliers are refined by point-to-plane ICP on a
+    larger sample, and the pose with the largest fraction of all probe points
+    within ``INLIER_DISTANCE`` of the gallery wins.
     """
     gallery = gallery if isinstance(gallery, Enrolled) else enroll(gallery)
+    probe = np.asarray(probe, dtype=float)
     if len(probe) < 30:
         raise ValueError("a probe head needs at least 30 points")
     rng = np.random.default_rng(seed)
-
-    def sample(size: int) -> np.ndarray:
-        return probe if len(probe) <= size else probe[rng.choice(len(probe), size, replace=False)]
-
-    coarse, fine = sample(coarse_sample), sample(fine_sample)
-    # The head axis of a partial view is estimated too close to the camera.
-    # The mean normal of the visible surface points towards the camera, so the
-    # starts also move the probe back along it.
-    facing = estimate_normals(fine, fine.mean(axis=0))[:, :2].mean(axis=0)
-    facing = np.append(facing, 0.0)
-    norm = np.linalg.norm(facing)
-    offsets = [np.zeros(3)] if norm < 0.15 else [facing / norm * shift for shift in back_shifts]
+    coarse = probe if len(probe) <= coarse_sample else probe[rng.choice(len(probe), coarse_sample, replace=False)]
+    fine = probe if len(probe) <= fine_sample else probe[rng.choice(len(probe), fine_sample, replace=False)]
+    probe_centre, gallery_centre = _upper_centre(probe), _upper_centre(gallery.points)
     starts = []
-    for offset in offsets:
-        for tilt in np.radians(tilts):
-            for yaw in np.radians(np.arange(0.0, 360.0, yaw_step)):
-                rotation = rotation_z(yaw) @ rotation_y(tilt)
-                # x -> R (x + offset - c) + c: shift, then turn about the head centre c.
-                translation = rotation @ (offset - HEAD_CENTRE) + HEAD_CENTRE
-                starts.append(_icp(coarse, gallery, rotation, translation, coarse_iterations, point_to_plane=False))
-    starts.sort(key=lambda item: item[2])
+    for tilt in np.radians(tilts):
+        for yaw in np.radians(np.arange(0.0, 360.0, yaw_step)):
+            rotation = rotation_z(yaw) @ rotation_y(tilt)
+            for shift in shifts:
+                translation = gallery_centre + np.asarray(shift) - rotation @ probe_centre
+                rotation_, translation_ = _gated_point_to_point(coarse, gallery, rotation, translation, coarse_gates)
+                starts.append((_inliers(coarse, gallery, rotation_, translation_), rotation_, translation_))
+    starts.sort(key=lambda item: -item[0])
     best: Registration | None = None
-    for rotation, translation, _ in starts[:refine]:
-        rotation, translation, _ = _icp(fine, gallery, rotation, translation, fine_iterations, point_to_plane=True)
-        distance, _ = gallery.tree.query(probe @ rotation.T + translation)
-        candidate = Registration(rotation, translation, _trimmed_rms(distance))
-        if best is None or candidate.rms < best.rms:
+    for _, rotation, translation in starts[:refine]:
+        rotation, translation = _gated_point_to_plane(fine, gallery, rotation, translation, fine_gates)
+        candidate = Registration(rotation, translation, _inliers(probe, gallery, rotation, translation))
+        if best is None or candidate.inliers > best.inliers:
             best = candidate
     assert best is not None
     return best
@@ -463,6 +551,7 @@ def radial_bottleneck(probe: np.ndarray, gallery: np.ndarray, sigma: float = 2.0
 @dataclass(frozen=True)
 class Match:
     geometric: float
+    shared_cm2: float
     topological: float | None
     overlap: float
     radial_fraction: float | None
@@ -472,6 +561,7 @@ class Match:
     def as_dict(self) -> dict[str, float | str | None]:
         return {
             "geometric_mm": self.geometric,
+            "shared_cm2": self.shared_cm2,
             "topological_mm": self.topological,
             "overlap": self.overlap,
             "radial_fraction": self.radial_fraction,
@@ -479,20 +569,54 @@ class Match:
         }
 
 
-def match(probe: np.ndarray, gallery: Enrolled | np.ndarray, topology: bool = True, seed: int = 0) -> Match:
-    """Register a canonical probe head to a canonical gallery head and score it."""
+def _surface_distance(points: np.ndarray, other: Enrolled) -> tuple[np.ndarray, np.ndarray]:
+    """Distances to the nearest point of ``other`` and to its tangent plane there."""
+    distance, index = other.tree.query(points)
+    return distance, np.abs(np.einsum("ij,ij->i", points - other.points[index], other.normals[index]))
+
+
+def _pair_scores(probe: Enrolled, gallery: Enrolled, registration: Registration) -> tuple[float, float, float]:
+    """Geometric score (mm), shared area (cm^2) and overlap of a registered pair."""
+    moved = registration.apply(probe.points)
+    moved = Enrolled(moved, probe.normals @ registration.rotation.T, probe.areas, _kd_tree(moved))
+    rms, areas = [], []
+    for source, target in ((moved, gallery), (gallery, moved)):
+        distance, plane = _surface_distance(source.points, target)
+        near = distance < GATE
+        if not near.any():
+            raise ValueError("the scans do not overlap after registration")
+        rms.append(float(np.sqrt(np.mean(plane[near] ** 2))))
+        areas.append(float(source.areas[near].sum()) / 100.0)
+    forward, _ = gallery.tree.query(moved.points)
+    return float(np.mean(rms)), float(np.mean(areas)), float(np.mean(forward < 3.0))
+
+
+def match(probe: Enrolled | np.ndarray, gallery: Enrolled | np.ndarray, topology: bool = True, seed: int = 0) -> Match:
+    """Register two canonical heads and score the pair.
+
+    The probe is registered to the gallery and the gallery to the probe; the
+    pose that puts more probe points on the gallery is kept, so a partial view
+    is matched as well from either side. ``geometric`` and ``shared_cm2``
+    average both directions, but since the pose is chosen by the probe's
+    inliers, swapping the arguments can change them slightly.
+    """
+    probe = probe if isinstance(probe, Enrolled) else enroll(probe)
     gallery = gallery if isinstance(gallery, Enrolled) else enroll(gallery)
-    registration = register(probe, gallery, seed=seed)
-    moved = registration.apply(probe)
-    distance, _ = gallery.tree.query(moved)
+    forward = register(probe.points, gallery, seed=seed)
+    backward = register(gallery.points, probe, seed=seed)
+    backward = backward.inverse(
+        _inliers(probe.points, gallery, backward.rotation.T, -backward.rotation.T @ backward.translation)
+    )
+    registration = forward if forward.inliers >= backward.inliers else backward
+    geometric, shared, overlap = _pair_scores(probe, gallery, registration)
     topological = fraction = error = None
     if topology:
         # A failed persistence comparison (no shared region) must not hide a valid geometric score.
         try:
-            topological, fraction = radial_bottleneck(moved, gallery.points)
+            topological, fraction = radial_bottleneck(registration.apply(probe.points), gallery.points)
         except ValueError as failure:
             error = str(failure)
-    return Match(registration.rms, topological, float(np.mean(distance < 3.0)), fraction, registration, error)
+    return Match(geometric, shared, topological, overlap, fraction, registration, error)
 
 
 def equal_error_rate(genuine: Iterable[float], impostor: Iterable[float]) -> tuple[float, float]:
