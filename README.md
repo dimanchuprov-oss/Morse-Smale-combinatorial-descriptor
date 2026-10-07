@@ -347,10 +347,12 @@ way `compare` decides, with the area limit:
 over everybody else (1.1 mm and more). The failures have visible causes in the data:
 
 - **Дима1 and Дима2** differ by 2.01 mm over 96 cm². This is the one failure
-  that a small overlap does not explain. The differences concentrate on the
-  nose, the mouth and the chin, while the forehead and the cheeks agree
-  (`face_examples.png`). A different expression is the likely cause; the scans
-  themselves would have to be checked;
+  that a small overlap does not explain. Split by height, the difference is
+  1.6 mm on the forehead, 2.1 mm around the eyes and 2.3 mm on the nose and
+  mouth, against 0.3–0.6 mm in every band for Олег and Влада. A change of
+  expression would leave the forehead alone, so expression alone does not
+  explain it. Glasses, a capture distortion or a labelling mix-up would; the
+  scans themselves have to be checked;
 - **Сережа3** misses the eyes and most of the forehead. It shares only
   60–74 cm² with Сережа1 and Сережа2;
 - **Ваня3** is a small cut-off scan with 2195 points. It fits other faces
