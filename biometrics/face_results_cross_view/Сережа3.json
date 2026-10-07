@@ -1,0 +1,53 @@
+{
+  "probe": "biometrics/Сережа3.ply",
+  "scores": {
+    "Дима": {
+      "geometric_mm": 29.47154546154968,
+      "topological_mm": 12.076826874324638,
+      "overlap": 0.08610217934976777,
+      "radial_fraction": 0.019166666666666665,
+      "topology_error": null,
+      "error": null
+    },
+    "Ваня": {
+      "geometric_mm": 17.147023988299576,
+      "topological_mm": 2.789323735318403,
+      "overlap": 0.1111111111111111,
+      "radial_fraction": 0.02438888888888889,
+      "topology_error": null,
+      "error": null
+    },
+    "Влада": {
+      "geometric_mm": 16.79183897589818,
+      "topological_mm": 42.758283212416686,
+      "overlap": 0.10164344408717399,
+      "radial_fraction": 0.069,
+      "topology_error": null,
+      "error": null
+    },
+    "Олег": {
+      "geometric_mm": 24.1265445345998,
+      "topological_mm": 32.03377980841535,
+      "overlap": 0.05019649874955341,
+      "radial_fraction": 0.016888888888888887,
+      "topology_error": null,
+      "error": null
+    },
+    "Сережа": {
+      "geometric_mm": 8.972241913153928,
+      "topological_mm": 0.9373924319378659,
+      "overlap": 0.432475884244373,
+      "radial_fraction": 0.03272222222222222,
+      "topology_error": null,
+      "error": null
+    }
+  },
+  "best_match": "Сережа",
+  "margin_mm": 7.819597062744252,
+  "calibration": {
+    "genuine_max": 1.5726412827046865,
+    "impostor_min": 3.1061863451944514,
+    "threshold": 2.339413813949569
+  },
+  "decision": "different"
+}

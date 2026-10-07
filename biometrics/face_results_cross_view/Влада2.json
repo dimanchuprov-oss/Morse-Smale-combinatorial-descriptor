@@ -1,0 +1,53 @@
+{
+  "probe": "biometrics/Влада2.ply",
+  "scores": {
+    "Дима": {
+      "geometric_mm": 6.185549187476614,
+      "topological_mm": 7.689217771133295,
+      "overlap": 0.2409867172675522,
+      "radial_fraction": 0.017,
+      "topology_error": null,
+      "error": null
+    },
+    "Ваня": {
+      "geometric_mm": 4.488442500203292,
+      "topological_mm": 6.069352737374513,
+      "overlap": 0.32827324478178366,
+      "radial_fraction": 0.0185,
+      "topology_error": null,
+      "error": null
+    },
+    "Влада": {
+      "geometric_mm": 14.51404354806599,
+      "topological_mm": 10.98637293552941,
+      "overlap": 0.15885063702900515,
+      "radial_fraction": 0.01638888888888889,
+      "topology_error": null,
+      "error": null
+    },
+    "Олег": {
+      "geometric_mm": 6.933739499192096,
+      "topological_mm": 1.9146267793552454,
+      "overlap": 0.408782867985904,
+      "radial_fraction": 0.025222222222222222,
+      "topology_error": null,
+      "error": null
+    },
+    "Сережа": {
+      "geometric_mm": 5.086113064455624,
+      "topological_mm": 5.396522095793536,
+      "overlap": 0.45811873136351317,
+      "radial_fraction": 0.017,
+      "topology_error": null,
+      "error": null
+    }
+  },
+  "best_match": "Ваня",
+  "margin_mm": 0.5976705642523319,
+  "calibration": {
+    "genuine_max": 1.5726412827046865,
+    "impostor_min": 3.1061863451944514,
+    "threshold": 2.339413813949569
+  },
+  "decision": "different"
+}
