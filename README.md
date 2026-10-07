@@ -205,6 +205,86 @@ height field is pose-dependent. For biometric use, canonicalize pose or replace
 height with an intrinsic scalar such as curvature or geodesic distance, and add
 temporal persistence tracking before identity modeling.
 
+## Face verification across viewing angles
+
+`morse-lidar-face` decides whether two head scans show the same person when the
+probe is taken from a different angle. The command:
+
+1. cuts the head out of each scan;
+2. registers the probe head rigidly to each enrolled head. Point-to-point ICP
+   is started from a grid of yaws, small tilts and back-shifts of the probe
+   axis, and the best starts are refined by point-to-plane ICP, so the viewing
+   angle does not need to be known;
+3. scores each pair.
+
+There are three scores:
+
+- `geometric_mm`: trimmed RMS distance after alignment; this is the decision score;
+- `topological_mm`: bottleneck distance between persistence diagrams of the radial
+  height field `r(theta, z)` of the two heads, computed over the region both scans see;
+- `overlap`: fraction of probe points within 3 mm of the enrolled head.
+
+```bash
+pip install -e '.[signal,topology,plot]'
+# angle experiment on full head scans + an extra real probe, with plots
+morse-lidar-face experiment --person A=biometrics/raw_preview.ply \
+    --person B=biometrics/raw_preview_05f4e84d-1b50-4aa0-b895-4d55b7ea554e.ply \
+    --probe biometrics/raw_preview_95b40cf3-65cc-4b20-999d-b82a85677891.ply \
+    --up-axis y --front-axis +z --out biometrics/face_results
+# identify a new scan against enrolled people, with thresholds from the experiment
+morse-lidar-face compare probe.ply --gallery A=a.ply --gallery B=b.ply --up-axis y \
+    --calibration biometrics/face_results/face_summary.json
+```
+
+`--up-axis` is required (Revo Scan and iPhone exports are Y-up). A section
+50–120 mm below the top that is wider than 350 mm (a body lying along the wrong
+axis), or a head region under 120 mm tall, is rejected as a wrong axis or wrong
+units. A tightly cropped scan read along a wrong axis can still pass, which is
+why the axis must be given. Negative angles need `=`, for example
+`--yaws=-90:90:15`.
+
+The experiment splits every full scan into two disjoint halves. One half is
+enrolled. The other half is used to simulate what a scanner would see from each
+yaw (default −90…90° in steps of 15°) and pitch (0° and 20°):
+
+- only surfaces that face the camera and are not hidden are kept: normals plus a
+  z-buffer whose tolerance grows with the surface slope;
+- noise and subsampling are added;
+- the view is scrambled by a random rigid motion;
+- the head is cut out like a real probe and matched against everyone.
+
+Real `--probe` scans are matched against the whole scans, as `compare` does.
+The command writes:
+
+- `face_scores.csv` and `face_summary.json` with the EER, the threshold, the
+  genuine/impostor ranges and the settings;
+- `face_scores_vs_angle.png`, `face_distributions.png` and `face_registration.png`.
+
+`compare --calibration` refuses a summary made with other settings. A decision
+is `same` up to the worst simulated genuine score, `different` from the best
+impostor score, and `uncertain` in between. Without `--calibration` or
+`--threshold` it only ranks the enrolled people.
+
+Results on the scans in `biometrics/` (two people, 52 genuine and 52 impostor
+pairs over all angles):
+
+- geometry separates the two people at every angle: genuine ≤ 1.57 mm, impostor
+  ≥ 3.11 mm, EER 0%;
+- the topological score overlaps (EER 25%);
+- the instant scan `raw_preview_95b40cf3…` is closest to A (2.10 mm against
+  2.41 mm to B) and falls into the uncertain zone.
+
+These numbers are optimistic and must not be read as biometric accuracy:
+
+- **one capture:** genuine probes come from the same capture as the gallery,
+  with the same hair, expression and scan artefacts;
+- **two people:** the impostor distribution comes from a single pair of people;
+- **same data:** the threshold is estimated on the data it is then applied to.
+
+Calibrated thresholds need repeat scans of several people, on different occasions
+and from different angles. Scale defaults assume an adult head in millimetres
+(`--units` converts).
+
 ## Reproducible repeat-scan experiment
 
 The versioned JSON contract is documented in [docs/DATA_CONTRACT.md](docs/DATA_CONTRACT.md).
