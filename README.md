@@ -237,45 +237,169 @@ temporal persistence tracking before identity modeling.
 
 ## Face verification across viewing angles
 
-`morse-lidar-face` decides whether two head scans show the same person when the
-probe is taken from a different angle. The command:
+`morse-lidar-face` decides whether two head scans show the same person. The
+scans may be full heads or single frontal snapshots, and they may be taken from
+different angles. For every pair the command:
 
-1. cuts the head out of each scan;
-2. registers the probe head rigidly to each enrolled head. Point-to-point ICP
-   is started from a grid of yaws, small tilts and back-shifts of the probe
-   axis, and the best starts are refined by point-to-plane ICP, so the viewing
-   angle does not need to be known;
-3. scores each pair.
+1. cuts the head out of each scan. It keeps a fixed height under the top of the
+   cloud and a fixed radius around the vertical head axis. Scanner noise
+   fragments and body parts that do not touch the head (shoulders and chest
+   below the chin) are dropped: their shape depends on clothes and posture,
+   not on the person;
+2. registers the scans rigidly, in both directions. ICP starts from a grid of
+   rotations about the vertical axis, small tilts and shifts. Every ICP step
+   uses only the point pairs closer than a gate that shrinks from 25 mm to 2 mm.
+   With a fixed trimming ratio, two partial views that share a third of their
+   surface were pulled towards the parts only one of them has. The pose under
+   which the most points lie within 2.5 mm of the other scan wins;
+3. scores the registered pair.
 
-There are three scores:
+There are four scores:
 
-- `geometric_mm`: trimmed RMS distance after alignment; this is the decision score;
-- `topological_mm`: bottleneck distance between persistence diagrams of the radial
-  height field `r(theta, z)` of the two heads, computed over the region both scans see;
-- `overlap`: fraction of probe points within 3 mm of the enrolled head.
+- `geometric_mm`: the decision score. It is the RMS point-to-plane distance
+  over the surface where the two scans come within 5 mm of each other,
+  averaged over both directions;
+- `shared_cm2`: area of that common surface, estimated from the point density
+  of each scan. A low score on a small common area is not evidence, because a
+  small patch fits many faces;
+- `topological_mm`: bottleneck distance between persistence diagrams of the
+  radial height field `r(theta, z)` of the two heads, computed over the region
+  both scans see;
+- `overlap`: fraction of the first scan's points within 3 mm of the second.
 
 ```bash
 pip install -e '.[signal,topology,plot]'
-# angle experiment on full head scans + an extra real probe, with plots
+# every pair of named scans (the person is the file name without the number)
+morse-lidar-face matrix biometrics/{Ваня,Влада,Дима,Олег,Сережа}*.ply \
+    --up-axis y --out biometrics/face_matrix
+# identify a new scan, with the threshold and area limit of the matrix
+morse-lidar-face compare probe.ply --gallery A=a.ply --gallery B=b.ply --up-axis y \
+    --calibration biometrics/face_matrix/face_matrix_summary.json
+# angle experiment: simulated views of full head scans
 morse-lidar-face experiment --person A=biometrics/raw_preview.ply \
     --person B=biometrics/raw_preview_05f4e84d-1b50-4aa0-b895-4d55b7ea554e.ply \
     --probe biometrics/raw_preview_95b40cf3-65cc-4b20-999d-b82a85677891.ply \
     --up-axis y --front-axis +z --out biometrics/face_results
-# identify a new scan against enrolled people, with thresholds from the experiment
-morse-lidar-face compare probe.ply --gallery A=a.ply --gallery B=b.ply --up-axis y \
-    --calibration biometrics/face_results/face_summary.json
 ```
 
-`--up-axis` is required (Revo Scan and iPhone exports are Y-up). A section
-50–120 mm below the top that is wider than 350 mm (a body lying along the wrong
-axis), or a head region under 120 mm tall, is rejected as a wrong axis or wrong
-units. A tightly cropped scan read along a wrong axis can still pass, which is
-why the axis must be given. Negative angles need `=`, for example
-`--yaws=-90:90:15`.
+`--up-axis` is required: Revo Scan and iPhone exports are Y-up. A wrong axis or
+wrong units are rejected when either of these holds:
 
-The experiment splits every full scan into two disjoint halves. One half is
-enrolled. The other half is used to simulate what a scanner would see from each
-yaw (default −90…90° in steps of 15°) and pitch (0° and 20°):
+- the section 50–120 mm below the top is wider than 350 mm (a body lying along
+  the wrong axis);
+- the head region is under 120 mm tall.
+
+A tightly cropped scan read along a wrong axis can still pass, which is why the
+axis must be given.
+
+### Real scans of five people
+
+`biometrics/` holds 14 frontal snapshots from a Revopoint Range:
+
+- Ваня, Влада, Олег and Сережа: three each;
+- Дима: two.
+
+`matrix` compares all 91 pairs, 13 of the same person and 78 of different
+people, in about 40 s on 10 worker processes. It writes:
+
+- `face_pairs.csv`: every pair;
+- `face_matrix_summary.json`: EER (all pairs, trusted pairs, by area limit), threshold, identification, decisions and the share of each scan dropped as fragments;
+- `face_matrix.png`: heat map of all pairs;
+- `face_score_vs_area.png`: score against shared area;
+- `face_nearest.png`: the closest same-person and other-person scan of each scan;
+- `face_examples.png`: where the surfaces of telling pairs differ.
+
+| pairs | same person | different people | EER |
+|---|---|---|---|
+| all | 13, median 0.62 mm | 78, median 1.88 mm | 23% |
+| sharing ≥ 100 cm² | 6, at most 1.41 mm | 28, at least 1.47 mm | 0% |
+
+The shared area is estimated from the point density of each scan, so sparse
+and dense scans measure alike. 100 cm² is about half of a face from the
+forehead to the chin. The more surface two scans share, the more their score
+can be trusted:
+
+| min shared area, cm² | 0–50 | 60 | 70 | 80–90 | 100 and more |
+|---|---|---|---|---|---|
+| EER | 23% | 17% | 20% | 11% | 0% |
+
+Under the 100 cm² limit and the calibrated decision rule:
+
+- 6 same-person pairs are accepted;
+- 28 different-person pairs are rejected;
+- none falls into the uncertain zone;
+- 57 pairs are left undecided because they share too little surface.
+
+The closest other scan is the same person for 11 of the 14 scans. Asked the
+way `compare` decides, with the area limit:
+
+- 9 scans are identified;
+- none is taken for another person;
+- 4 are rejected: Влада2, Дима1, Дима2 and Сережа3;
+- Ваня3 shares 100 cm² with no other scan.
+
+Олег (0.43–0.47 mm) and Влада (0.49–0.62 mm) are recognised with a wide margin
+over everybody else (1.1 mm and more). The failures have visible causes in the data:
+
+- **Дима1 and Дима2** differ by 2.01 mm over 96 cm². This is the one failure
+  that a small overlap does not explain. The differences concentrate on the
+  nose, the mouth and the chin, while the forehead and the cheeks agree
+  (`face_examples.png`). A different expression is the likely cause; the scans
+  themselves would have to be checked;
+- **Сережа3** misses the eyes and most of the forehead. It shares only
+  60–74 cm² with Сережа1 and Сережа2;
+- **Ваня3** is a small cut-off scan with 2195 points. It fits other faces
+  almost as well as Ваня's: 1.10 mm to Олег3 against 0.86 mm to Ваня1. These
+  are the lowest different-person scores in the set;
+- **Ваня1–Ваня2** (1.41 mm) is the weakest trusted same-person pair, 0.06 mm
+  under the closest trusted impostor;
+- **Влада2** is rejected only because its pairs with Влада1 and Влада3 share
+  96–97 cm², just under the limit. Their scores are 0.49 and 0.62 mm.
+
+The topological score does not separate people on frontal snapshots (EER 45%).
+The radial map of a frontal view covers only 3–8% of the cylinder around the
+head, so the persistence diagrams describe a small window.
+
+A known gap in the crop: the head is cut at a fixed height under the top, and on
+frontal snapshots the top is the hairline. The neck therefore stays in the crop
+when it is connected to the chin (Олег2, Ваня2, Сережа2; the dark band in
+`face_examples.png`). It only enters the score where the other scan also has
+surface within 5 mm. Cutting at the chin would be cleaner.
+
+These numbers describe this data set and must not be read as biometric accuracy:
+
+- **same data:** the threshold and the 100 cm² limit are chosen on the 14 scans
+  they are then applied to;
+- **few people:** the 28 trusted different-person pairs come from five people;
+- **narrow margin:** the trusted same-person and different-person ranges are
+  only 0.06 mm apart.
+
+Scans give reliable results when they:
+
+- are taken facing the camera, within about ±30°;
+- have a neutral expression with the mouth closed;
+- show the whole face from the forehead to the chin, with the hair off the
+  forehead;
+- share at least 100 cm² of surface with the enrolled scan.
+
+`compare --calibration` uses the threshold and the area limit of the summary.
+It refuses a summary made with other settings or with an older version of the
+method: rerun `matrix` or `experiment` after an update. A probe that shares less than
+the limit with every enrolled scan gets the decision `insufficient overlap`.
+Otherwise a decision is:
+
+- `same` up to the worst trusted same-person score;
+- `different` from the best trusted impostor score;
+- `uncertain` in between.
+
+Without `--calibration` or `--threshold` the command only ranks the enrolled people.
+
+### Simulated viewing angles
+
+`experiment` checks the angle range on full head scans. It splits every scan
+into two disjoint halves of its points and enrolls one half. The other half is
+used to simulate what a scanner would see from each yaw (default −90…90° in
+steps of 15°) and pitch (0° and 20°):
 
 - only surfaces that face the camera and are not hidden are kept: normals plus a
   z-buffer whose tolerance grows with the surface slope;
@@ -290,30 +414,28 @@ The command writes:
   genuine/impostor ranges and the settings;
 - `face_scores_vs_angle.png`, `face_distributions.png` and `face_registration.png`.
 
-`compare --calibration` refuses a summary made with other settings. A decision
-is `same` up to the worst simulated genuine score, `different` from the best
-impostor score, and `uncertain` in between. Without `--calibration` or
-`--threshold` it only ranks the enrolled people.
+Results on the full scans in `biometrics/` (two people, A and B, 52 genuine and
+52 impostor pairs over all angles):
 
-Results on the scans in `biometrics/` (two people, 52 genuine and 52 impostor
-pairs over all angles):
+- geometry separates the two people at every angle: genuine ≤ 1.07 mm,
+  impostor ≥ 2.05 mm, EER 0%;
+- the topological score overlaps less than with the previous registration
+  (EER 17%, was 25%);
+- the instant scan `raw_preview_95b40cf3…` is closest to B (2.01 mm against
+  2.21 mm to A) and falls into the uncertain zone. The previous method put it
+  closer to A (2.10 against 2.41 mm), so it cannot be attributed to either.
 
-- geometry separates the two people at every angle: genuine ≤ 1.57 mm, impostor
-  ≥ 3.11 mm, EER 0%;
-- the topological score overlaps (EER 25%);
-- the instant scan `raw_preview_95b40cf3…` is closest to A (2.10 mm against
-  2.41 mm to B) and falls into the uncertain zone.
-
-These numbers are optimistic and must not be read as biometric accuracy:
+These numbers are optimistic:
 
 - **one capture:** genuine probes come from the same capture as the gallery,
   with the same hair, expression and scan artefacts;
 - **two people:** the impostor distribution comes from a single pair of people;
 - **same data:** the threshold is estimated on the data it is then applied to.
 
-Calibrated thresholds need repeat scans of several people, on different occasions
-and from different angles. Scale defaults assume an adult head in millimetres
-(`--units` converts).
+The real scans above are the better guide to accuracy.
+
+Negative angles need `=`, for example `--yaws=-90:90:15`. Scale defaults
+assume an adult head in millimetres (`--units` converts).
 
 ## Reproducible repeat-scan experiment
 

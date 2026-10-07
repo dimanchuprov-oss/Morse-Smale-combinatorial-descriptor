@@ -1,0 +1,511 @@
+{
+  "settings": {
+    "up_axis": "y",
+    "units": "mm",
+    "method": 2
+  },
+  "scans": {
+    "Ваня1": {
+      "person": "Ваня",
+      "points": 3696,
+      "dropped_fraction": 0.19826464208242955,
+      "error": null
+    },
+    "Ваня2": {
+      "person": "Ваня",
+      "points": 4729,
+      "dropped_fraction": 0.013352806175672804,
+      "error": null
+    },
+    "Ваня3": {
+      "person": "Ваня",
+      "points": 2195,
+      "dropped_fraction": 0.20643528561099056,
+      "error": null
+    },
+    "Влада1": {
+      "person": "Влада",
+      "points": 2737,
+      "dropped_fraction": 0.28593790764414295,
+      "error": null
+    },
+    "Влада2": {
+      "person": "Влада",
+      "points": 3484,
+      "dropped_fraction": 0.052488441664400365,
+      "error": null
+    },
+    "Влада3": {
+      "person": "Влада",
+      "points": 3301,
+      "dropped_fraction": 0.12994201370585134,
+      "error": null
+    },
+    "Дима1": {
+      "person": "Дима",
+      "points": 1976,
+      "dropped_fraction": 0.20674427940586115,
+      "error": null
+    },
+    "Дима2": {
+      "person": "Дима",
+      "points": 2484,
+      "dropped_fraction": 0.1616604792440095,
+      "error": null
+    },
+    "Олег1": {
+      "person": "Олег",
+      "points": 3183,
+      "dropped_fraction": 0.16740779492545121,
+      "error": null
+    },
+    "Олег2": {
+      "person": "Олег",
+      "points": 4387,
+      "dropped_fraction": 0.01238180999549754,
+      "error": null
+    },
+    "Олег3": {
+      "person": "Олег",
+      "points": 3489,
+      "dropped_fraction": 0.02867483296213813,
+      "error": null
+    },
+    "Сережа1": {
+      "person": "Сережа",
+      "points": 1718,
+      "dropped_fraction": 0.5075952995127544,
+      "error": null
+    },
+    "Сережа2": {
+      "person": "Сережа",
+      "points": 2991,
+      "dropped_fraction": 0.15983146067415732,
+      "error": null
+    },
+    "Сережа3": {
+      "person": "Сережа",
+      "points": 1731,
+      "dropped_fraction": 0.5524819027921406,
+      "error": null
+    }
+  },
+  "people": {
+    "Ваня": [
+      "Ваня1",
+      "Ваня2",
+      "Ваня3"
+    ],
+    "Влада": [
+      "Влада1",
+      "Влада2",
+      "Влада3"
+    ],
+    "Дима": [
+      "Дима1",
+      "Дима2"
+    ],
+    "Олег": [
+      "Олег1",
+      "Олег2",
+      "Олег3"
+    ],
+    "Сережа": [
+      "Сережа1",
+      "Сережа2",
+      "Сережа3"
+    ]
+  },
+  "min_shared_cm2": 100.0,
+  "pairs": {
+    "genuine": 13,
+    "impostor": 78,
+    "failed": 0,
+    "reliable": 34
+  },
+  "note": "thresholds and the area limit are estimated on the same scans they are applied to, and on few people; read them as a description of this data set, not as biometric accuracy",
+  "all_pairs": {
+    "geometric_mm": {
+      "eer": 0.23076923076923078,
+      "threshold": 1.6901050474164703,
+      "genuine_max": 2.0072075837457395,
+      "impostor_min": 1.1005734957563502,
+      "genuine_median": 0.6167449188274081,
+      "impostor_median": 1.882465540969652,
+      "genuine_pairs": 13,
+      "impostor_pairs": 78
+    },
+    "topological_mm": {
+      "eer": 0.44871794871794873,
+      "threshold": 4.415072349953242,
+      "genuine_max": 17.708472371333677,
+      "impostor_min": 1.7629985634914576,
+      "genuine_median": 3.4294408788033834,
+      "impostor_median": 5.414619881296144,
+      "genuine_pairs": 13,
+      "impostor_pairs": 78
+    }
+  },
+  "reliable_pairs": {
+    "geometric_mm": {
+      "eer": 0.0,
+      "threshold": 1.4428813954912374,
+      "genuine_max": 1.4113323503246633,
+      "impostor_min": 1.4744304406578113,
+      "genuine_median": 0.49196886014831454,
+      "impostor_median": 1.8751153750759053,
+      "genuine_pairs": 6,
+      "impostor_pairs": 28
+    },
+    "topological_mm": {
+      "eer": 0.5,
+      "threshold": 4.3644840847950235,
+      "genuine_max": 17.708472371333677,
+      "impostor_min": 1.9927455753806487,
+      "genuine_median": 3.9857617238684746,
+      "impostor_median": 4.516986707785206,
+      "genuine_pairs": 6,
+      "impostor_pairs": 28
+    }
+  },
+  "calibrated_min_shared_cm2": 100.0,
+  "geometric_mm": {
+    "eer": 0.0,
+    "threshold": 1.4428813954912374,
+    "genuine_max": 1.4113323503246633,
+    "impostor_min": 1.4744304406578113,
+    "genuine_median": 0.49196886014831454,
+    "impostor_median": 1.8751153750759053,
+    "genuine_pairs": 6,
+    "impostor_pairs": 28
+  },
+  "identification": {
+    "scans": 14,
+    "rank1_correct": 11,
+    "with_area_limit": {
+      "identified": 9,
+      "wrong_person": 0,
+      "uncertain": 0,
+      "rejected": 4,
+      "no_pair_with_enough_surface": 1
+    },
+    "nearest": {
+      "Ваня1": {
+        "nearest": "Ваня3",
+        "correct": true,
+        "best_same_mm": 0.8649759626498124,
+        "best_same_shared_cm2": 68.4357649654234,
+        "best_other": "Олег3",
+        "best_other_mm": 1.4744304406578113,
+        "trusted": {
+          "nearest": "Ваня2",
+          "geometric_mm": 1.4113323503246633,
+          "same_person": true,
+          "decision": "same"
+        }
+      },
+      "Ваня2": {
+        "nearest": "Ваня1",
+        "correct": true,
+        "best_same_mm": 1.4113323503246633,
+        "best_same_shared_cm2": 118.76788944015024,
+        "best_other": "Влада1",
+        "best_other_mm": 1.6120732542670928,
+        "trusted": {
+          "nearest": "Ваня1",
+          "geometric_mm": 1.4113323503246633,
+          "same_person": true,
+          "decision": "same"
+        }
+      },
+      "Ваня3": {
+        "nearest": "Ваня1",
+        "correct": true,
+        "best_same_mm": 0.8649759626498124,
+        "best_same_shared_cm2": 68.4357649654234,
+        "best_other": "Олег3",
+        "best_other_mm": 1.1005734957563502,
+        "trusted": null
+      },
+      "Влада1": {
+        "nearest": "Влада2",
+        "correct": true,
+        "best_same_mm": 0.48933762613732235,
+        "best_same_shared_cm2": 95.50467762962882,
+        "best_other": "Сережа1",
+        "best_other_mm": 1.5685559516239311,
+        "trusted": {
+          "nearest": "Влада3",
+          "geometric_mm": 0.5175404408916265,
+          "same_person": true,
+          "decision": "same"
+        }
+      },
+      "Влада2": {
+        "nearest": "Влада1",
+        "correct": true,
+        "best_same_mm": 0.48933762613732235,
+        "best_same_shared_cm2": 95.50467762962882,
+        "best_other": "Сережа2",
+        "best_other_mm": 1.4982226071255917,
+        "trusted": {
+          "nearest": "Сережа2",
+          "geometric_mm": 1.4982226071255917,
+          "same_person": false,
+          "decision": "different"
+        }
+      },
+      "Влада3": {
+        "nearest": "Влада1",
+        "correct": true,
+        "best_same_mm": 0.5175404408916265,
+        "best_same_shared_cm2": 137.65434486531814,
+        "best_other": "Ваня3",
+        "best_other_mm": 1.3141360958384074,
+        "trusted": {
+          "nearest": "Влада1",
+          "geometric_mm": 0.5175404408916265,
+          "same_person": true,
+          "decision": "same"
+        }
+      },
+      "Дима1": {
+        "nearest": "Влада3",
+        "correct": false,
+        "best_same_mm": 2.0072075837457395,
+        "best_same_shared_cm2": 95.76496645414272,
+        "best_other": "Влада3",
+        "best_other_mm": 1.44414429696913,
+        "trusted": {
+          "nearest": "Влада1",
+          "geometric_mm": 1.582759380428405,
+          "same_person": false,
+          "decision": "different"
+        }
+      },
+      "Дима2": {
+        "nearest": "Ваня3",
+        "correct": false,
+        "best_same_mm": 2.0072075837457395,
+        "best_same_shared_cm2": 95.76496645414272,
+        "best_other": "Ваня3",
+        "best_other_mm": 1.7893976890539562,
+        "trusted": {
+          "nearest": "Олег2",
+          "geometric_mm": 1.823215358258477,
+          "same_person": false,
+          "decision": "different"
+        }
+      },
+      "Олег1": {
+        "nearest": "Олег2",
+        "correct": true,
+        "best_same_mm": 0.45251714886601735,
+        "best_same_shared_cm2": 116.04728156547213,
+        "best_other": "Ваня3",
+        "best_other_mm": 1.114194289947109,
+        "trusted": {
+          "nearest": "Олег2",
+          "geometric_mm": 0.45251714886601735,
+          "same_person": true,
+          "decision": "same"
+        }
+      },
+      "Олег2": {
+        "nearest": "Олег3",
+        "correct": true,
+        "best_same_mm": 0.43223208136504915,
+        "best_same_shared_cm2": 150.84497135470684,
+        "best_other": "Ваня3",
+        "best_other_mm": 1.6547609790256232,
+        "trusted": {
+          "nearest": "Олег3",
+          "geometric_mm": 0.43223208136504915,
+          "same_person": true,
+          "decision": "same"
+        }
+      },
+      "Олег3": {
+        "nearest": "Олег2",
+        "correct": true,
+        "best_same_mm": 0.43223208136504915,
+        "best_same_shared_cm2": 150.84497135470684,
+        "best_other": "Ваня3",
+        "best_other_mm": 1.1005734957563502,
+        "trusted": {
+          "nearest": "Олег2",
+          "geometric_mm": 0.43223208136504915,
+          "same_person": true,
+          "decision": "same"
+        }
+      },
+      "Сережа1": {
+        "nearest": "Сережа2",
+        "correct": true,
+        "best_same_mm": 0.6115234678895805,
+        "best_same_shared_cm2": 109.08809258667048,
+        "best_other": "Влада2",
+        "best_other_mm": 1.531889891965262,
+        "trusted": {
+          "nearest": "Сережа2",
+          "geometric_mm": 0.6115234678895805,
+          "same_person": true,
+          "decision": "same"
+        }
+      },
+      "Сережа2": {
+        "nearest": "Сережа1",
+        "correct": true,
+        "best_same_mm": 0.6115234678895805,
+        "best_same_shared_cm2": 109.08809258667048,
+        "best_other": "Влада2",
+        "best_other_mm": 1.4982226071255917,
+        "trusted": {
+          "nearest": "Сережа1",
+          "geometric_mm": 0.6115234678895805,
+          "same_person": true,
+          "decision": "same"
+        }
+      },
+      "Сережа3": {
+        "nearest": "Дима1",
+        "correct": false,
+        "best_same_mm": 1.7902371858537802,
+        "best_same_shared_cm2": 59.8382256430597,
+        "best_other": "Дима1",
+        "best_other_mm": 1.6472171533085622,
+        "trusted": {
+          "nearest": "Влада1",
+          "geometric_mm": 1.818500596367226,
+          "same_person": false,
+          "decision": "different"
+        }
+      }
+    }
+  },
+  "decisions": {
+    "same_person_same": 6,
+    "same_person_uncertain": 0,
+    "same_person_different": 0,
+    "different_people_same": 0,
+    "different_people_uncertain": 0,
+    "different_people_different": 28,
+    "undecided_small_overlap": 57
+  },
+  "eer_by_min_shared_cm2": [
+    {
+      "min_shared_cm2": 0.0,
+      "genuine_pairs": 13,
+      "impostor_pairs": 78,
+      "eer": 0.23076923076923078
+    },
+    {
+      "min_shared_cm2": 10.0,
+      "genuine_pairs": 13,
+      "impostor_pairs": 78,
+      "eer": 0.23076923076923078
+    },
+    {
+      "min_shared_cm2": 20.0,
+      "genuine_pairs": 13,
+      "impostor_pairs": 78,
+      "eer": 0.23076923076923078
+    },
+    {
+      "min_shared_cm2": 30.0,
+      "genuine_pairs": 13,
+      "impostor_pairs": 78,
+      "eer": 0.23076923076923078
+    },
+    {
+      "min_shared_cm2": 40.0,
+      "genuine_pairs": 13,
+      "impostor_pairs": 78,
+      "eer": 0.23076923076923078
+    },
+    {
+      "min_shared_cm2": 50.0,
+      "genuine_pairs": 13,
+      "impostor_pairs": 78,
+      "eer": 0.23076923076923078
+    },
+    {
+      "min_shared_cm2": 60.0,
+      "genuine_pairs": 12,
+      "impostor_pairs": 70,
+      "eer": 0.16904761904761906
+    },
+    {
+      "min_shared_cm2": 70.0,
+      "genuine_pairs": 10,
+      "impostor_pairs": 62,
+      "eer": 0.1967741935483871
+    },
+    {
+      "min_shared_cm2": 80.0,
+      "genuine_pairs": 9,
+      "impostor_pairs": 51,
+      "eer": 0.11437908496732026
+    },
+    {
+      "min_shared_cm2": 90.0,
+      "genuine_pairs": 9,
+      "impostor_pairs": 40,
+      "eer": 0.10555555555555556
+    },
+    {
+      "min_shared_cm2": 100.0,
+      "genuine_pairs": 6,
+      "impostor_pairs": 28,
+      "eer": 0.0
+    },
+    {
+      "min_shared_cm2": 110.0,
+      "genuine_pairs": 5,
+      "impostor_pairs": 18,
+      "eer": 0.0
+    },
+    {
+      "min_shared_cm2": 120.0,
+      "genuine_pairs": 3,
+      "impostor_pairs": 12,
+      "eer": 0.0
+    },
+    {
+      "min_shared_cm2": 130.0,
+      "genuine_pairs": 3,
+      "impostor_pairs": 7,
+      "eer": 0.0
+    },
+    {
+      "min_shared_cm2": 140.0,
+      "genuine_pairs": 2,
+      "impostor_pairs": 5,
+      "eer": 0.0
+    },
+    {
+      "min_shared_cm2": 150.0,
+      "genuine_pairs": 2,
+      "impostor_pairs": 2,
+      "eer": 0.0
+    },
+    {
+      "min_shared_cm2": 160.0,
+      "genuine_pairs": 1,
+      "impostor_pairs": 2,
+      "eer": 0.0
+    },
+    {
+      "min_shared_cm2": 170.0,
+      "genuine_pairs": 1,
+      "impostor_pairs": 0,
+      "eer": null
+    },
+    {
+      "min_shared_cm2": 180.0,
+      "genuine_pairs": 0,
+      "impostor_pairs": 0,
+      "eer": null
+    }
+  ]
+}
