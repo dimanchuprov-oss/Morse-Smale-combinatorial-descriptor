@@ -36,6 +36,7 @@ import json
 import math
 import os
 import sys
+import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -59,13 +60,14 @@ from .face import (
     upright,
 )
 from .pointcloud import PointCloud, load_point_cloud, set_up_axis, voxel_downsample
+from .face_regions import REGION_VERSION, locate_regions, plot_regions
 
 UNITS = {"mm": 1.0, "cm": 10.0, "m": 1000.0}
 GENUINE, IMPOSTOR, REAL, INK, MUTED = "#355DA6", "#E4572E", "#2A9D8F", "#1d2433", "#6b7a99"
 FIELDS = ["probe", "kind", "yaw", "pitch", "gallery", "genuine", "geometric_mm", "shared_cm2", "topological_mm",
           "overlap", "radial_fraction", "topology_error", "error"]  # fmt: skip
 MATRIX_FIELDS = ["scan_a", "scan_b", "person_a", "person_b", "genuine", "geometric_mm", "shared_cm2", "reliable",
-                 "topological_mm", "overlap", "radial_fraction", "topology_error", "error"]  # fmt: skip
+                 "topological_mm", "overlap", "radial_fraction", "topology_error", "error", "elapsed_s"]  # fmt: skip
 # Pairs sharing less surface are reported but not trusted. 100 cm^2 is roughly
 # half of a face from the forehead to the chin; on the scans in biometrics/ the
 # error rate falls to zero from there (see eer_by_min_shared_cm2 of the matrix
@@ -118,8 +120,11 @@ def _upright(path: Path, args: argparse.Namespace) -> np.ndarray:
     return upright(load_point_cloud(path).points, args.up_axis, UNITS[args.units])
 
 
-def _enroll(cloud: np.ndarray) -> Enrolled:
-    return enroll(extract_head(cloud, up_axis="z"))
+def _enroll(cloud: np.ndarray, region: str = "full") -> Enrolled:
+    head = extract_head(cloud, up_axis="z")
+    if region == "auto":
+        return enroll(head.points[locate_regions(head.points).mask])
+    return enroll(head)
 
 
 def _score(
@@ -130,7 +135,10 @@ def _score(
 
 
 def _settings(args: argparse.Namespace) -> dict[str, Any]:
-    return {"up_axis": args.up_axis, "units": args.units, "method": METHOD_VERSION}
+    settings = {"up_axis": args.up_axis, "units": args.units, "method": METHOD_VERSION}
+    if getattr(args, "region", "full") == "auto":
+        settings.update(region="auto", region_version=REGION_VERSION)
+    return settings
 
 
 def _calibration(args: argparse.Namespace) -> dict[str, Any]:
@@ -152,8 +160,9 @@ def compare(args: argparse.Namespace) -> dict[str, Any]:
         raise SystemExit("pass either --calibration or --threshold, not both")
     calibration = _calibration(args) if args.calibration else {}
     min_area = args.min_area if args.min_area is not None else calibration.get("calibrated_min_shared_cm2", 0.0)
-    galleries = {label: _enroll(_upright(path, args)) for label, path in _labelled(args.gallery, "--gallery").items()}
-    probe = enroll(extract_head(_upright(Path(args.probe), args), up_axis="z"))
+    galleries = {label: _enroll(_upright(path, args), args.region)
+                 for label, path in _labelled(args.gallery, "--gallery").items()}
+    probe = _enroll(_upright(Path(args.probe), args), args.region)
     scores: dict[str, Any] = {}
     for label, gallery in galleries.items():
         try:
@@ -163,7 +172,8 @@ def compare(args: argparse.Namespace) -> dict[str, Any]:
     # Only pairs with enough common surface take part in the ranking and the decision.
     usable = {label: score for label, score in scores.items()
               if score.get("error") is None and score["shared_cm2"] >= min_area}  # fmt: skip
-    result: dict[str, Any] = {"probe": str(args.probe), "scores": scores, "min_shared_cm2": min_area}
+    result: dict[str, Any] = {"probe": str(args.probe), "scores": scores, "min_shared_cm2": min_area,
+                              "settings": _settings(args)}
     if not usable:
         result.update(best_match=None, decision="insufficient overlap",
                       note=f"no enrolled scan shares {min_area:g} cm2 of surface with the probe")  # fmt: skip
@@ -260,12 +270,13 @@ def _person(path: Path) -> str:
 def _match_pair(task: tuple[np.ndarray, np.ndarray, bool, int]) -> dict[str, Any]:
     """Score one pair of canonical heads; module level so that worker processes can run it."""
     first, second, topology, seed = task
+    started = time.perf_counter()
     try:
         result = match(first, second, topology=topology, seed=seed)
     except Exception as error:  # noqa: BLE001 - one broken pair must not lose the whole matrix
-        return {"error": f"{type(error).__name__}: {error}"}
+        return {"error": f"{type(error).__name__}: {error}", "elapsed_s": time.perf_counter() - started}
     pose = {"rotation": result.registration.rotation.tolist(), "translation": result.registration.translation.tolist()}
-    return {**result.as_dict(), "error": None, "pose": pose}
+    return {**result.as_dict(), "error": None, "pose": pose, "elapsed_s": time.perf_counter() - started}
 
 
 def _statistics(genuine: list[float], impostor: list[float]) -> dict[str, float] | None:
@@ -357,7 +368,58 @@ def _decisions(rows: list[dict[str, Any]], min_area: float, statistics: dict[str
     return counts
 
 
+def inspect_regions(args: argparse.Namespace) -> dict[str, Any]:
+    """Inspect one scan at a time, without registration or pairwise matching."""
+    paths = [Path(path) for path in args.scans]
+    if len({path.stem for path in paths}) != len(paths):
+        raise ValueError("scan file names must be unique")
+    output = Path(args.out)
+    output.mkdir(parents=True, exist_ok=True)
+    records, pictures, arrays = {}, {}, {}
+    started = time.monotonic()
+    for done, path in enumerate(paths, 1):
+        tick = time.monotonic()
+        points = np.empty((0, 3))
+        record: dict[str, Any] = {"path": str(path), "error": None}
+        try:
+            cloud = _upright(path, args)
+            record["raw_points"] = len(cloud)
+            head = extract_head(cloud, up_axis="z")
+            points = head.points
+            record.update(head_points=len(points), dropped_fraction=head.dropped, offset_mm=list(head.offset))
+            region = locate_regions(points)
+            record.update(region.as_dict())
+            pictures[path.stem] = (points, region)
+            arrays[f"{path.stem}/nose"] = region.nose
+            arrays[f"{path.stem}/forehead"] = region.forehead
+        except (ValueError, OSError) as error:
+            record["error"] = f"{type(error).__name__}: {error}"
+            pictures[path.stem] = (points, record["error"])
+        arrays[f"{path.stem}/points"] = points
+        record["elapsed_s"] = time.monotonic() - tick
+        records[path.stem] = record
+        print(f"[{done}/{len(paths)}] {path.stem}: {record['error'] or 'regions found'} "
+              f"({record['elapsed_s']:.2f}s)", file=sys.stderr, flush=True)
+    summary = {"settings": _settings(args), "mode": "regions_only", "total": len(paths),
+               "detected": sum(record["error"] is None for record in records.values()),
+               "failed": sum(record["error"] is not None for record in records.values()),
+               "scans": records, "plots": [],
+               "note": "Detection success is not landmark accuracy or recognition accuracy; visually inspect the masks."}
+    np.savez_compressed(output / "auto_regions.npz", **arrays)
+    summary["elapsed_s"] = time.monotonic() - started
+    report_path = output / "auto_regions.json"
+    report_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+    if not args.no_plots:
+        summary["plots"] = plot_regions(pictures, output)
+    summary["elapsed_s"] = time.monotonic() - started
+    report_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+    return summary
+
+
 def matrix(args: argparse.Namespace) -> dict[str, Any]:
+    started = time.perf_counter()
+    if args.min_area is None:
+        args.min_area = 0.0 if args.region == "auto" else MIN_SHARED_CM2
     paths = [Path(path) for path in args.scans]
     names = [path.stem for path in paths]
     if len(set(names)) != len(names):
@@ -365,28 +427,80 @@ def matrix(args: argparse.Namespace) -> dict[str, Any]:
     person = {path.stem: _person(path) for path in paths}
     heads: dict[str, np.ndarray] = {}
     scans: dict[str, dict[str, Any]] = {}
+    pictures, masks = {}, {}
+    output = Path(args.out)
+    output.mkdir(parents=True, exist_ok=True)
     for path in paths:
+        tick = time.perf_counter()
+        phases: dict[str, float] = {}
         try:
-            head = extract_head(_upright(path, args), up_axis="z")
-            heads[path.stem] = head.points
+            cloud = _upright(path, args)
+            loaded_at = time.perf_counter()
+            phases["load_s"] = loaded_at - tick
+            head = extract_head(cloud, up_axis="z")
+            head_at = time.perf_counter()
+            phases["head_s"] = head_at - loaded_at
             scans[path.stem] = {"person": person[path.stem], "points": len(head.points),
                                 "dropped_fraction": head.dropped, "error": None}  # fmt: skip
+            if args.region == "auto":
+                try:
+                    region = locate_regions(head.points)
+                except ValueError as error:
+                    pictures[path.stem] = (head.points, str(error))
+                    raise
+                finally:
+                    phases["regions_s"] = time.perf_counter() - head_at
+                pictures[path.stem] = (head.points, region)
+                scans[path.stem]["regions"] = region.as_dict()
+                masks[f"{path.stem}/points"] = head.points
+                masks[f"{path.stem}/nose"] = region.nose
+                masks[f"{path.stem}/forehead"] = region.forehead
+                heads[path.stem] = head.points[region.mask]
+            else:
+                heads[path.stem] = head.points
         except (ValueError, OSError) as error:
             scans[path.stem] = {"person": person[path.stem], "points": 0, "dropped_fraction": None, "error": str(error)}
-    order = sorted(heads, key=lambda name: (person[name], name))
+        phases["total_s"] = time.perf_counter() - tick
+        scans[path.stem]["timing"] = phases
+    prepared_at = time.perf_counter()
+    # Keep failed scans in the pair list and denominator.
+    order = sorted(names, key=lambda name: (person[name], name))
     if len(order) < 2:
-        raise SystemExit("need at least two scans with a usable head")
+        raise SystemExit("need at least two scans")
     pairs = list(itertools.combinations(order, 2))
-    tasks = [(heads[first], heads[second], not args.no_topology, args.seed) for first, second in pairs]
+    prepared = [(first, second) for first, second in pairs if first in heads and second in heads]
+    tasks = [(heads[first], heads[second], not args.no_topology, args.seed) for first, second in prepared]
     jobs = args.jobs or max(1, min(len(tasks), (os.cpu_count() or 2) - 1))
-    if jobs == 1:
-        results = [_match_pair(task) for task in tasks]
-    else:
-        with ProcessPoolExecutor(max_workers=jobs) as pool:
-            results = list(pool.map(_match_pair, tasks))
+    if jobs < 1:
+        raise ValueError("--jobs must be nonnegative")
+    if args.region == "auto":
+        np.savez_compressed(output / "auto_regions.npz", **masks)
+        (output / "auto_regions.json").write_text(json.dumps(scans, indent=2, ensure_ascii=False), encoding="utf-8")
+        if not args.no_plots:
+            plot_regions(pictures, output)
+    print(f"Matching {len(tasks)}/{len(pairs)} pairs with {jobs} workers ({args.region})", file=sys.stderr, flush=True)
+    matching_at = time.perf_counter()
+    results = []
+    with (output / "face_checkpoint.jsonl").open("w", encoding="utf-8") as checkpoint:
+        def collect(iterator):
+            for done, ((first, second), result) in enumerate(zip(prepared, iterator), 1):
+                results.append(result)
+                checkpoint.write(json.dumps({"scan_a": first, "scan_b": second, **result}, ensure_ascii=False) + "\n")
+                checkpoint.flush()
+                if done % 5 == 0 or done == len(tasks):
+                    print(f"Pairs {done}/{len(tasks)} ({time.perf_counter() - matching_at:.1f}s)",
+                          file=sys.stderr, flush=True)
+        if jobs == 1:
+            collect(_match_pair(task) for task in tasks)
+        else:
+            with ProcessPoolExecutor(max_workers=jobs) as pool:
+                collect(pool.map(_match_pair, tasks))
+    matching_s = time.perf_counter() - matching_at
     rows: list[dict[str, Any]] = []
     poses: dict[tuple[str, str], dict[str, Any]] = {}
-    for (first, second), result in zip(pairs, results):
+    by_pair = dict(zip(prepared, results))
+    for first, second in pairs:
+        result = by_pair.get((first, second), {"error": scans[first].get("error") or scans[second].get("error")})
         pose = result.pop("pose", None)
         if pose is not None:
             poses[(first, second)] = pose
@@ -398,16 +512,27 @@ def matrix(args: argparse.Namespace) -> dict[str, Any]:
         if row.get("error") is not None:
             print(f"warning: {row['scan_a']} - {row['scan_b']}: {row['error']}", file=sys.stderr)
     summary = _matrix_summary(rows, scans, order, person, args)
-    output = Path(args.out)
-    output.mkdir(parents=True, exist_ok=True)
+    pair_times = [result["elapsed_s"] for result in results if "elapsed_s" in result]
+    summary["timing"] = {
+        "workers": jobs, "topology": not args.no_topology,
+        "preparation_s": prepared_at - started, "matching_wall_s": matching_s,
+        "matched_pairs": len(tasks), "pair_mean_s": float(np.mean(pair_times)) if pair_times else None,
+        "pair_median_s": float(np.median(pair_times)) if pair_times else None,
+        "pair_p95_s": float(np.quantile(pair_times, 0.95)) if pair_times else None,
+        "pair_total_s": float(sum(pair_times)),
+        "thread_limits": {name: os.environ.get(name) for name in
+                          ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")},
+        "note": "pair time includes enrolment, both registration directions and scoring; preparation is done once per scan",
+    }
     with (output / "face_pairs.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=MATRIX_FIELDS)
         writer.writeheader()
         writer.writerows({key: row.get(key) for key in MATRIX_FIELDS} for row in rows)
-    (output / "face_matrix_summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False),
-                                                     encoding="utf-8")  # fmt: skip
     if not args.no_plots:
         summary["plots"] = _matrix_plots(rows, summary, heads, poses, order, person, output)
+    summary["timing"]["total_wall_s"] = time.perf_counter() - started
+    (output / "face_matrix_summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False),
+                                                     encoding="utf-8")  # fmt: skip
     return summary
 
 
@@ -427,6 +552,9 @@ def _matrix_summary(
         "scans": scans,
         "people": people,
         "min_shared_cm2": args.min_area,
+        "coverage": {"requested_scans": len(scans), "usable_scans": sum(s.get("error") is None for s in scans.values()),
+                     "requested_pairs": len(rows), "scored_pairs": len(valid),
+                     "eer_is_conditional_on_success": len(valid) != len(rows)},
         "pairs": {
             "genuine": sum(row["genuine"] for row in valid),
             "impostor": sum(not row["genuine"] for row in valid),
@@ -459,6 +587,10 @@ def _matrix_summary(
         "rank1_correct": sum(entry["correct"] for entry in nearest.values()),
         "with_area_limit": _trusted_outcomes(nearest) if trusted is not None else None,
         "nearest": nearest,
+        "requested_scans": len(order),
+        "rank1_complete_correct": sum(entry["correct"] and
+                                       sum(scan in (row["scan_a"], row["scan_b"]) for row in valid) == len(order) - 1
+                                       for scan, entry in nearest.items()),
     }
     if trusted is not None:
         summary["decisions"] = _decisions(valid, limit, trusted)
@@ -473,6 +605,8 @@ def _matrix_summary(
             point["eer"] = equal_error_rate(genuine, impostor)[0]
         curve.append(point)
     summary["eer_by_min_shared_cm2"] = curve
+    if getattr(args, "region", "full") == "auto":
+        summary["note"] += "; experimental automatic regions; the full-face 100 cm2 limit does not apply"
     return summary
 
 
@@ -904,13 +1038,22 @@ def _matrix_plots(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("compare", "experiment", "matrix"):
+    for name in ("compare", "experiment", "matrix", "regions"):
         command = commands.add_parser(name)
         command.add_argument("--up-axis", choices=("x", "y", "z"), required=True,
                              help="vertical axis of the scans (Revo Scan and iPhone exports: y)")  # fmt: skip
         command.add_argument("--units", choices=tuple(UNITS), default="mm", help="length units of the scans")
         command.add_argument("--no-topology", action="store_true", help="skip the persistence score (faster)")
         command.add_argument("--seed", type=int, default=0)
+        if name == "regions":
+            command.set_defaults(region="auto")
+            command.add_argument("scans", nargs="+", help="scans to inspect sequentially, without pairwise matching")
+            command.add_argument("--out", required=True, help="region masks, diagnostics and plots")
+            command.add_argument("--no-plots", action="store_true")
+            continue
+        if name != "experiment":
+            command.add_argument("--region", choices=("full", "auto"), default="full",
+                                 help="full head or experimental M4 nose/forehead from scan XYZ")
         if name == "compare":
             command.add_argument("probe", help="scan to identify")
             command.add_argument("--gallery", action="append", required=True,
@@ -926,8 +1069,8 @@ def _parser() -> argparse.ArgumentParser:
         elif name == "matrix":
             command.add_argument("scans", nargs="+",
                                  help="scans named PERSON<number>.ply, e.g. Ivan1.ply Ivan2.ply Olga1.ply")  # fmt: skip
-            command.add_argument("--min-area", type=float, default=MIN_SHARED_CM2,
-                                 help="cm2 of common surface needed to trust a pair (default %(default)g)")  # fmt: skip
+            command.add_argument("--min-area", type=float,
+                                 help="cm2 needed to trust a pair (default: full=100, auto=0, uncalibrated)")  # fmt: skip
             command.add_argument("--jobs", type=int, default=0, help="worker processes (default: CPU count - 1)")
             command.add_argument("--out", required=True, help="results folder")
             command.add_argument("--no-plots", action="store_true")
@@ -950,7 +1093,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     args = _parser().parse_args(argv)
     try:
-        result = {"compare": compare, "experiment": experiment, "matrix": matrix}[args.command](args)
+        result = {"compare": compare, "experiment": experiment, "matrix": matrix, "regions": inspect_regions}[args.command](args)
     except (ValueError, RuntimeError, OSError, KeyError) as error:
         raise SystemExit(f"morse-lidar-face: {error}") from error
     text = json.dumps(result, indent=2, ensure_ascii=False)

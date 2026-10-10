@@ -530,8 +530,9 @@ person.
 The nose and forehead alone almost remove the effect of the expression, so
 comparing face regions is the direction to follow. Narrowing the region costs
 something too: the closest other person is 1.04 mm away in b1 against
-1.5 mm in b0. In 4 of the 90 probes someone else came closer than the
-person's own template.
+1.5 mm in b0. The historical conversation also mentioned four rank-1 errors
+for b1, which contradicts the reported 100% rank-1. That statement is
+unverified; use the per-probe rows in `bench_pairs.csv` to resolve it.
 
 The forecast assumes independent scores. It counts, for every genuine score,
 the fraction of the 810 impostor scores below it.
@@ -542,6 +543,79 @@ Limits:
 - all data come from one recording session: the neutral pair gives 0.32 mm,
   against 0.4–0.6 mm between repeat scans of real people;
 - there are only ten people.
+
+### M4: automatic nose and forehead (experimental, not yet validated)
+
+`b3` runs the same matcher on regions found from the scan's XYZ coordinates
+alone. `face_regions.locate_regions` takes a cropped head in millimetres with
+Z up. It estimates the face direction, finds a supported nasal protrusion,
+corrects small face-plane tilts, and selects conservative nose/bridge and
+forehead windows relative to the detected tip. The metric windows are fixed
+anatomical priors; this is not a trained landmark model. It currently targets
+frontal snapshots with both sides of the nose and enough forehead visible.
+Missing support is an explicit failure, with no full-face fallback.
+
+The detector does not receive mesh vertex indices, subject identity, camera
+pose, a neutral mesh or a labelled template. Multiface labels still generate
+the simulated scans and select expression frames as before. **After** detection,
+they also measure mask IoU/precision/recall and tip error (when the tip vertex
+was sampled); those diagnostics do not affect the mask or score. The oracle
+B1 region is a useful comparator, not independently annotated ground truth.
+
+Multiface and full pairwise benchmarks belong on the **compute server**, inside
+its isolated Python environment/container. A local, sequential region-only
+inspection of the 14 project scans was explicitly authorised on 2026-10-10:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
+    PYTHONPATH=src .venv/bin/python -m morse_lidar.face_cli regions \
+    biometrics/{Ваня,Влада,Дима,Олег,Сережа}[0-9].ply --up-axis y --out biometrics/m4_regions
+```
+
+`regions` loads and processes one scan at a time. It never registers pairs or
+computes recognition metrics, and it writes the JSON and masks before plotting
+so a plotting error cannot lose the detections. The server commands are:
+
+```bash
+# Inspect masks before spending time on all the pairwise registrations.
+python -m morse_lidar.multiface_cli bench --data /data/multiface \
+    --methods b3 --regions-only --out /results/m4_masks
+# Same seed, people and probes for full head, oracle and automatic regions.
+python -m morse_lidar.multiface_cli bench --data /data/multiface \
+    --methods b0,b1,b3 --jobs 3 --seed 0 --out /results/m4_multiface
+# Then evaluate the 14 real scans; also rerun with --region full as baseline.
+python -m morse_lidar.face_cli matrix /scans/{Ваня,Влада,Дима,Олег,Сережа}*.ply \
+    --up-axis y --region auto --no-topology --jobs 3 --out /results/m4_real
+# Or run tests, Multiface, then both real-scan matrices in that order:
+python tools/m4_server.py --data /data/multiface --scans /scans --out /results/m4_run
+```
+
+The runner refuses macOS and existing output directories, limits BLAS to one
+thread per worker, records source/scan hashes and stage logs, and stops if a
+stage fails. It expects all ten Multiface people/classes and exactly 14 named
+real scans. Freeze detector parameters before the real-scan evaluation; tuning
+on those 14 scans would make them development data rather than a check.
+
+New artifacts are `auto_regions.json`, `auto_regions.npz` and paginated
+`auto_regions_*.png` overlays. Long Multiface runs print progress and save
+`bench_progress.json` and `bench_checkpoint.jsonl` (partial scores for inspection,
+not automatic resume). The real matrices retain failed scans in all 91 pairs.
+Rank-1 counts an incomplete comparison as a miss; EER on surviving scores is
+explicitly marked conditional if anything failed. In the real matrix use
+`identification.rank1_complete_correct / identification.requested_scans` for
+this conservative rank-1; the older nearest-neighbour fields remain descriptive
+statistics on available scores.
+
+The old 100 cm² full-face area cutoff does not fit this smaller mask. Automatic
+matrices default to no area cutoff (`0`), which is an evaluation setting, not
+a validated decision threshold. Full-face and automatic-region calibrations
+are incompatible, and `compare --region auto --calibration ...` checks that.
+`comparison.json` passes real-scan EER non-regression only if all 91 pairs were
+scored and automatic EER is no higher than the rerun full-face baseline (the
+historical baseline is 23.1%). No M4 recognition accuracy result is claimed
+yet: Multiface and pairwise validation are pending. The local region-only
+inspection is recorded in `biometrics/m4_regions/auto_regions.json`; detection
+coverage is not landmark accuracy or recognition accuracy.
 
 ## Reproducible repeat-scan experiment
 

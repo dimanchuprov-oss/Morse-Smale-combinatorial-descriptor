@@ -20,6 +20,8 @@ Methods:
 * ``b2``: each person is enrolled from three shots (neutral, open smile, open
   mouth) and a probe gets the score of the closest; a probe is never compared
   with a template of its own class.
+* ``b3`` (M4): nose/bridge and forehead found from scan XYZ alone. Mesh labels
+  are used only for an independent mask diagnostic, never by the detector.
 
 The scores are optimistic in one respect: the probe and the gallery come from
 one recording session, so the neutral probe shows only what the scanner and
@@ -31,6 +33,8 @@ from __future__ import annotations
 import csv
 import json
 import os
+import sys
+import time
 import zlib
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
@@ -40,11 +44,13 @@ from typing import Any
 import numpy as np
 
 from .face import GATE, _surface_distance, enroll, equal_error_rate, extract_head, match, upright
+from .face_regions import REGION_VERSION, locate_regions, plot_regions
 from .multiface import VERTICES, Segment, load_people, peak_frame
 from .pointcloud import PointCloud, voxel_downsample
 from .virtual_scan import Scan, Shot, shoot
 
-METHODS = ("b0", "b1", "b2")
+BASELINES = ("b0", "b1", "b2")
+METHODS = (*BASELINES, "b3")
 # Classes the b2 gallery is enrolled from, besides the neutral one.
 B2_EXTRA = ("smile_open", "mouth_open")
 GALLERY_SHOT = Shot(distance=0.5, spacing=1.7)
@@ -235,6 +241,57 @@ def _head_or_error(scan: Scan | str, mask: np.ndarray | None) -> tuple[np.ndarra
         return f"{type(error).__name__}: {error}"
 
 
+def _automatic_heads(shots: dict[str, Shots], labels: Regions, out: Path, plot: bool) -> tuple[dict, dict]:
+    """Detect first, then compare the resulting masks with oracle labels for diagnostics."""
+    from .face import _kd_tree
+
+    heads, records, pictures, arrays = {}, {}, {}, {}
+    for person, shot in shots.items():
+        for kind, scans in (("gallery", shot.gallery), ("probe", shot.probes)):
+            for key, scan in scans.items():
+                name, task_key = f"{person}/{kind}/{key}", (person, kind, key)
+                if isinstance(scan, str):
+                    heads[task_key], records[name] = scan, {"error": scan}
+                    continue
+                points = np.empty((0, 3))
+                try:
+                    head = extract_head(scan.points, up_axis="y", voxel=VOXEL)
+                    points = head.points
+                    region = locate_regions(points)  # only XYZ crosses this boundary
+                    selected = points[region.mask]
+                    heads[task_key] = (selected, selected, np.empty(0, dtype=int))
+                    records[name] = {**region.as_dict(), "error": None}
+                    pictures[name] = (points, region)
+                    arrays[f"{name}/points"] = points
+                    arrays[f"{name}/nose"] = region.nose
+                    arrays[f"{name}/forehead"] = region.forehead
+                except ValueError as error:
+                    message = f"{type(error).__name__}: {error}"
+                    heads[task_key], records[name] = message, {"error": message}
+                    pictures[name] = (points, message)
+                    continue
+                # Evaluation only: changing/removing these labels cannot change the mask.
+                canonical = upright(scan.points, "y") - np.asarray(head.offset)
+                _, nearest = _kd_tree(canonical).query(points)
+                oracle = labels.rigid[scan.vertex[nearest]]
+                intersection = int((oracle & region.mask).sum())
+                union = int((oracle | region.mask).sum())
+                records[name].update(oracle_iou=intersection / max(1, union),
+                                     oracle_precision=intersection / int(region.mask.sum()),
+                                     oracle_recall=intersection / max(1, int(oracle.sum())))
+                tip_samples = canonical[scan.vertex == labels.nose_tip]
+                records[name]["oracle_tip_distance_mm"] = (
+                    float(np.linalg.norm(tip_samples - region.nose_tip, axis=1).min()) if len(tip_samples) else None)
+    report = {"version": REGION_VERSION, "scans": records, "total": len(records),
+              "failed": sum(record["error"] is not None for record in records.values()),
+              "note": "oracle masks evaluate the detector; they are not detector inputs"}
+    if plot:
+        report["plots"] = plot_regions(pictures, out)
+    np.savez_compressed(out / "auto_regions.npz", **arrays)
+    (out / "auto_regions.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return heads, report
+
+
 def pairs_for(method: str, probes: dict[str, list[str]], galleries: dict[str, list[str]]) -> list[tuple[str, ...]]:
     """``(probe person, probe class, gallery person, template)`` the method compares.
 
@@ -264,12 +321,18 @@ def _match_task(task: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, bool
     return row
 
 
-def run(data: Path, out: Path, methods: tuple[str, ...] = METHODS, people: list[str] | None = None,
-        jobs: int = 0, seed: int = 0, plot: bool = True) -> dict[str, Any]:  # fmt: skip
+def run(data: Path, out: Path, methods: tuple[str, ...] = BASELINES, people: list[str] | None = None,
+        jobs: int = 0, seed: int = 0, plot: bool = True, regions_only: bool = False) -> dict[str, Any]:  # fmt: skip
     """Shoot, match and summarise; writes ``bench_pairs.csv``, ``bench_summary.json`` and plots to ``out``."""
     unknown = sorted(set(methods) - set(METHODS))
     if unknown:
         raise ValueError(f"unknown methods: {', '.join(unknown)}")
+    if not methods or jobs < 0:
+        raise ValueError("choose at least one method and a nonnegative worker count")
+    if regions_only and "b3" not in methods:
+        raise ValueError("--regions-only requires b3")
+    out.mkdir(parents=True, exist_ok=True)
+    print("Loading Multiface and generating reproducible shots", file=sys.stderr, flush=True)
     loaded = load_people(data)
     if people:
         missing = sorted(set(people) - set(loaded))
@@ -282,12 +345,20 @@ def run(data: Path, out: Path, methods: tuple[str, ...] = METHODS, people: list[
     labels = _labels(loaded, faces)
     shots = {person: take_shots(person, segments, labels, faces, seed) for person, segments in loaded.items()}
     # b0 and b2 share the unmasked heads, so a pair they both need is matched once.
-    masks = {"b0": "full", "b1": "rigid", "b2": "full"}
+    masks = {"b0": "full", "b1": "rigid", "b2": "full", "b3": "auto"}
     heads = {mask: {(person, kind, key): _head_or_error(scan, labels.rigid if mask == "rigid" else None)
                     for person, shot in shots.items()
                     for kind, scans in (("gallery", shot.gallery), ("probe", shot.probes))
                     for key, scan in scans.items()}
-             for mask in {masks[method] for method in methods}}  # fmt: skip
+             for mask in {masks[method] for method in methods} - {"auto"}}  # fmt: skip
+    diagnostics = None
+    if "b3" in methods:
+        print("Finding nose and forehead from scan XYZ", file=sys.stderr, flush=True)
+        heads["auto"], diagnostics = _automatic_heads(shots, labels, out, plot)
+        print(f"M4 regions: {diagnostics['total'] - diagnostics['failed']}/{diagnostics['total']} scans",
+              file=sys.stderr, flush=True)
+    if regions_only:
+        return diagnostics
     probes = {person: list(shot.probes) for person, shot in shots.items()}
     galleries = {person: list(shot.gallery) for person, shot in shots.items()}
     wanted = {method: pairs_for(method, probes, galleries) for method in methods}
@@ -302,8 +373,19 @@ def run(data: Path, out: Path, methods: tuple[str, ...] = METHODS, people: list[
                 residuals = masks[method] == "full" and person == other and key == "neutral"
                 tasks[task_key] = (probe[0], gallery[0], probe[1], probe[2], residuals)
     workers = jobs or max(1, (os.cpu_count() or 2) - 1)
+    started = time.monotonic()
+    print(f"Matching {len(tasks)} pairs with {workers} workers; {len(results)} preparation failures",
+          file=sys.stderr, flush=True)
     with ProcessPoolExecutor(max_workers=workers) as pool:
-        results.update(zip(tasks, pool.map(_match_task, tasks.values(), chunksize=4)))
+        with (out / "bench_checkpoint.jsonl").open("w", encoding="utf-8") as checkpoint:
+            for done, (key, result) in enumerate(zip(tasks, pool.map(_match_task, tasks.values(), chunksize=4)), 1):
+                results[key] = result
+                checkpoint.write(json.dumps({"key": key, **{k: v for k, v in result.items() if k != "residual"}}) + "\n")
+                if done % 25 == 0 or done == len(tasks):
+                    checkpoint.flush()
+                    progress = {"completed": done, "total": len(tasks), "elapsed_s": time.monotonic() - started}
+                    (out / "bench_progress.json").write_text(json.dumps(progress), encoding="utf-8")
+                    print(f"Pairs {done}/{len(tasks)} ({progress['elapsed_s'] / 60:.1f} min)", file=sys.stderr, flush=True)
     maps: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     for (_, _, label, _, _), result in results.items():
         residual = result.pop("residual", None)
@@ -326,6 +408,11 @@ def run(data: Path, out: Path, methods: tuple[str, ...] = METHODS, people: list[
             scored = [row for row in candidates if row.get("geometric_mm") is not None]
             rows.append(min(scored, key=lambda row: row["geometric_mm"]) if scored else candidates[0])
     summary = summarise(rows, labels, loaded, failed)
+    summary["settings"] = {"seed": seed, "methods": list(methods), "voxel_mm": VOXEL,
+                           "auto_region_version": REGION_VERSION if "b3" in methods else None}
+    if diagnostics is not None:
+        summary["automatic_regions"] = {"total": diagnostics["total"], "failed": diagnostics["failed"],
+                                        "report": "auto_regions.json"}
     out.mkdir(parents=True, exist_ok=True)
     with (out / "bench_pairs.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=PAIR_FIELDS)
@@ -372,7 +459,10 @@ def summarise(rows: list[dict[str, Any]], labels: Regions, loaded: dict[str, dic
             for probe in sorted({row["probe"] for row in mine}):
                 own = [row["geometric_mm"] for row in scored if row["probe"] == probe and row["genuine"]]
                 rivals = [row["geometric_mm"] for row in scored if row["probe"] == probe and not row["genuine"]]
-                ranks.append(bool(own) and all(own[0] < score for score in rivals))
+                # An unscored rival must not turn an incomplete search into a hit.
+                expected = [row for row in mine if row["probe"] == probe and not row["genuine"]]
+                ranks.append(bool(own) and bool(rivals) and len(rivals) == len(expected)
+                             and all(own[0] < score for score in rivals))
             entry: dict[str, Any] = {"probes": len(ranks), "rank1": float(np.mean(ranks)) if ranks else None,
                                      "genuine_median": float(np.median(genuine)) if genuine else None,
                                      "genuine_max": max(genuine) if genuine else None,
@@ -395,6 +485,10 @@ def summarise(rows: list[dict[str, Any]], labels: Regions, loaded: dict[str, dic
             "classes": per_class,
             "expressive_rank1": sum(entry["rank1"] * entry["probes"] for entry in others) / probes if probes else None,
             "expressive_eer": equal_error_rate(genuine, impostor)[0] if genuine and impostor else None,
+            "eer_is_conditional_on_success": any(row.get("geometric_mm") is None for row in everything
+                                                  if row["probe_class"] != "neutral"),
+            "scored_rows": sum(row.get("geometric_mm") is not None for row in everything),
+            "total_rows": len(everything),
             "failed_pairs": (failed or {}).get(method, sum(1 for row in everything if row.get("error"))),
         }
     return summary

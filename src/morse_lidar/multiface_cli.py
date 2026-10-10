@@ -18,7 +18,7 @@ import argparse
 import json
 from pathlib import Path
 
-from .expression_bench import METHODS, run
+from .expression_bench import run
 from .multiface import CLASSES, PEOPLE, fetch
 
 
@@ -38,11 +38,12 @@ def _parser() -> argparse.ArgumentParser:
     bench = commands.add_parser("bench", help="score expressive probes against neutral templates")
     bench.add_argument("--data", required=True, help="folder filled by fetch")
     bench.add_argument("--out", required=True, help="results folder")
-    bench.add_argument("--methods", type=_list, default=list(METHODS), help="comma-separated: b0,b1,b2")
+    bench.add_argument("--methods", type=_list, default=["b0", "b1", "b2"], help="comma-separated: b0,b1,b2,b3 (M4)")
     bench.add_argument("--people", type=_list, help="comma-separated ids (default: everybody downloaded)")
     bench.add_argument("--jobs", type=int, default=0, help="worker processes (default: CPU count - 1)")
     bench.add_argument("--seed", type=int, default=0, help="seed of the shot poses and the scanner noise")
     bench.add_argument("--no-plots", action="store_true")
+    bench.add_argument("--regions-only", action="store_true", help="diagnose b3 masks without matching pairs")
     return parser
 
 
@@ -53,7 +54,7 @@ def main(argv: list[str] | None = None) -> None:
             result = fetch(Path(args.dest).expanduser(), args.people, args.classes, args.workers)
         else:
             result = run(Path(args.data).expanduser(), Path(args.out), tuple(args.methods), args.people, args.jobs,
-                         args.seed, plot=not args.no_plots)  # fmt: skip
+                         args.seed, plot=not args.no_plots, regions_only=args.regions_only)  # fmt: skip
     except (ValueError, RuntimeError, OSError, KeyError) as error:
         raise SystemExit(f"morse-lidar-multiface: {error}") from error
     print(json.dumps(result, indent=2, ensure_ascii=False))

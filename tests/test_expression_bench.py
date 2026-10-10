@@ -67,3 +67,16 @@ def test_b2_never_meets_a_template_of_the_probe_class():
     assert ("A", "neutral", "A", "neutral") in b2
     assert len([pair for pair in b2 if pair[:2] == ("A", "frown")]) == 6
     assert {pair[3] for pair in pairs_for("b0", probes, galleries)} == {"neutral"}
+
+
+def test_failed_impostor_does_not_improve_rank1():
+    rows = [_row("b3", "A", "frown", "A", 0.5), _row("b3", "A", "frown", "B", 2.0),
+            {**_row("b3", "A", "frown", "C", None), "error": "no forehead"}]
+
+    class Labels:
+        rigid = brows = hair = eye_covers = np.zeros(3, dtype=bool)
+
+    result = summarise(rows, Labels(), {"A": {}, "B": {}, "C": {}})["methods"]["b3"]
+    assert result["expressive_rank1"] == 0.0
+    assert result["eer_is_conditional_on_success"]
+    assert result["scored_rows"] == 2 and result["total_rows"] == 3
