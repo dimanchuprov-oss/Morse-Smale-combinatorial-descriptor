@@ -418,9 +418,14 @@ def plots(rows: list[dict[str, Any]], summary: dict[str, Any], error_maps: dict[
             genuine = [row["geometric_mm"] for row in mine if row["genuine"]]
             axis.scatter(impostor, np.full(len(impostor), position) + 0.12, s=9, color=IMPOSTOR, alpha=0.45, lw=0)
             axis.scatter(genuine, np.full(len(genuine), position) - 0.12, s=16, color=GENUINE, lw=0)
+        # The panels share the y axis, so tick labels would show one method's rates on all of
+        # them: each panel writes its own rate at the right end of the row.
         entries = summary["methods"][method]["classes"]
-        axis.set_yticks(range(len(classes)), [f"{label}  {entries[label]['rank1'] * 100:.0f}%" if label in entries
-                                              else label for label in classes])  # fmt: skip
+        for position, label in enumerate(classes):
+            rate = entries.get(label, {}).get("rank1")
+            axis.text(1.01, position, "—" if rate is None else f"{rate * 100:.0f}%", transform=axis.get_yaxis_transform(),
+                      va="center", ha="left", fontsize=8, color=INK)  # fmt: skip
+        axis.set_yticks(range(len(classes)), classes)
         axis.invert_yaxis()
         axis.set_xlabel("RMS расстояние, мм")
         rank1 = summary["methods"][method]["expressive_rank1"]
@@ -430,7 +435,7 @@ def plots(rows: list[dict[str, Any]], summary: dict[str, Any], error_maps: dict[
     handles = [axes[0][0].scatter([], [], s=16, color=GENUINE), axes[0][0].scatter([], [], s=16, color=IMPOSTOR)]
     figure.legend(handles, ["тот же человек", "другой человек"], loc="upper right", ncol=2, frameon=False,
                   fontsize=8, labelcolor=MUTED)  # fmt: skip
-    figure.suptitle("Мимика против нейтрального эталона\nу класса — доля узнанных среди всех людей (rank-1)",
+    figure.suptitle("Мимика против нейтрального эталона\nсправа у строки — доля узнанных среди всех людей (rank-1)",
                     color=INK, x=0.01, ha="left", fontsize=10)  # fmt: skip
     figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.9))
     figure.savefig(out / "bench_scores.png", dpi=150)

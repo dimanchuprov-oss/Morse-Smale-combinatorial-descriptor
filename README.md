@@ -512,6 +512,37 @@ The command writes:
 - `bench_error_maps.png`, which shows where on the face each expression departs
   from the neutral template.
 
+Results on the ten people (90 expressive probes per method, every probe
+against all ten people):
+
+| | b0 | b1 | b2 |
+|---|---|---|---|
+| rank-1 with expression | 93% | 100% | 99% |
+| EER with expression | 11.1% | 3.3% | 6.7% |
+| rank-1 at 100 people, rough forecast | ~66% | ~96% | ~84% |
+| cost of a smile, mm | +1.3…1.5 | +0.1…0.3 | +1.0…1.4 |
+
+The current matcher fails on smiles: 70% rank-1 on the wide smile, 80% on
+the open one, 90% on the closed one. Every other class scores 100%. A smile
+moves the cheeks and the mouth by 1.3–1.5 mm, as much as the gap to another
+person.
+
+The nose and forehead alone almost remove the effect of the expression, so
+comparing face regions is the direction to follow. Narrowing the region costs
+something too: the closest other person is 1.04 mm away in b1 against
+1.5 mm in b0. In 4 of the 90 probes someone else came closer than the
+person's own template.
+
+The forecast assumes independent scores. It counts, for every genuine score,
+the fraction of the 810 impostor scores below it.
+
+Limits:
+
+- the b1 region comes from the mesh labels, so 96% is an upper bound;
+- all data come from one recording session: the neutral pair gives 0.32 mm,
+  against 0.4–0.6 mm between repeat scans of real people;
+- there are only ten people.
+
 ## Reproducible repeat-scan experiment
 
 The versioned JSON contract is documented in [docs/DATA_CONTRACT.md](docs/DATA_CONTRACT.md).
