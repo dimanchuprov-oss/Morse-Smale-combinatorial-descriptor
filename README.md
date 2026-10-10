@@ -437,6 +437,112 @@ The real scans above are the better guide to accuracy.
 Negative angles need `=`, for example `--yaws=-90:90:15`. Scale defaults
 assume an adult head in millimetres (`--units` converts).
 
+### Expressions: the Multiface benchmark
+
+`morse-lidar-multiface` measures what facial expressions cost the matcher. It
+uses the tracked meshes of [Multiface](https://github.com/facebookresearch/multiface)
+(Meta, CC-BY-NC 4.0, [arXiv 2207.11243](https://arxiv.org/abs/2207.11243)):
+ten people of the v1 script, each with named expressions on one shared mesh
+of 7,306 vertices. The data may not be redistributed, so keep the download
+folder outside this repository.
+
+```bash
+pip install -e '.[signal,plot]'
+# ten classes of ten people: about 1 GB of traffic and 50 MB on disk per person
+morse-lidar-multiface fetch --dest ~/data/multiface
+morse-lidar-multiface bench --data ~/data/multiface --out results/multiface
+```
+
+`fetch` is a downloader of its own: the official script passes server file
+names to the shell. Each archive is streamed and checked in several ways:
+
+- its length must match the announced length;
+- its MD5 sum must match the published one;
+- a cut connection is retried;
+- redirects are refused.
+
+Only the per-frame vertices without the head pose are kept, plus the head
+poses themselves.
+
+The ten classes are:
+
+- neutral;
+- eyes closed;
+- closed smile, open smile and wide smile;
+- open mouth;
+- raised brows;
+- frown;
+- puffed cheeks;
+- speech (one sentence).
+
+The probe of a class is its peak frame: the frame that departs most from the
+neutral shape over the face.
+
+`bench` turns meshes into scans with a virtual single-shot scanner
+(`morse_lidar.virtual_scan`). It models a pinhole camera with a z-buffer:
+
+- samples lie 1.2–2.2 mm apart;
+- surfaces seen more obliquely than 75° are lost;
+- depth noise is 0.86·z² mm, z in metres;
+- depth is rounded to 0.1 mm;
+- the eyes, brows and hair are holes, as on the Revopoint.
+
+Each person is enrolled from a frontal shot at 0.5 m. Probes are shot from a
+random pose:
+
+- yaw within ±30°;
+- pitch within ±10°;
+- distance 0.4–0.7 m.
+
+The methods are:
+
+- `b0`: the current matcher;
+- `b1`: the matcher on the nose, the bridge of the nose and the forehead only.
+  The region comes from the mesh labels, so this is an upper bound for a mask
+  found on a real scan;
+- `b2`: three templates per person (neutral, open smile, open mouth), and the
+  closest one counts.
+
+The command writes:
+
+- `bench_pairs.csv`;
+- `bench_summary.json`, with rank-1, EER and the cost of each class, that is
+  the growth of the median genuine score over the neutral probes;
+- `bench_scores.png`;
+- `bench_error_maps.png`, which shows where on the face each expression departs
+  from the neutral template.
+
+Results on the ten people (90 expressive probes per method, every probe
+against all ten people):
+
+| | b0 | b1 | b2 |
+|---|---|---|---|
+| rank-1 with expression | 93% | 100% | 99% |
+| EER with expression | 11.1% | 3.3% | 6.7% |
+| rank-1 at 100 people, rough forecast | ~66% | ~96% | ~84% |
+| cost of a smile, mm | +1.3…1.5 | +0.1…0.3 | +1.0…1.4 |
+
+The current matcher fails on smiles: 70% rank-1 on the wide smile, 80% on
+the open one, 90% on the closed one. Every other class scores 100%. A smile
+moves the cheeks and the mouth by 1.3–1.5 mm, as much as the gap to another
+person.
+
+The nose and forehead alone almost remove the effect of the expression, so
+comparing face regions is the direction to follow. Narrowing the region costs
+something too: the closest other person is 1.04 mm away in b1 against
+1.5 mm in b0. In 4 of the 90 probes someone else came closer than the
+person's own template.
+
+The forecast assumes independent scores. It counts, for every genuine score,
+the fraction of the 810 impostor scores below it.
+
+Limits:
+
+- the b1 region comes from the mesh labels, so 96% is an upper bound;
+- all data come from one recording session: the neutral pair gives 0.32 mm,
+  against 0.4–0.6 mm between repeat scans of real people;
+- there are only ten people.
+
 ## Reproducible repeat-scan experiment
 
 The versioned JSON contract is documented in [docs/DATA_CONTRACT.md](docs/DATA_CONTRACT.md).
